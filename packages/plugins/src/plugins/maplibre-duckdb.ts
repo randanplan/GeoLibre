@@ -31,6 +31,7 @@ type MutableDuckDBControl = {
   beforeId?: string;
   layer?: {
     beforeId: string | null;
+    rows?: Record<number, Record<string, unknown>>;
   } | null;
   renderLayer?: () => Promise<void>;
   renderer?: DuckDBRendererLike | null;
@@ -74,6 +75,7 @@ let duckdbConstructorsPromise: Promise<{
   DuckDBControl: DuckDBControlConstructor;
 }> | null = null;
 const duckdbRenderedStyles = new Map<string, DuckDBRenderedStyle>();
+const warnedMissingRowsLayerIds = new Set<string>();
 
 export function openDuckDBLayerPanel(app: GeoLibreAppAPI): void {
   void openStandaloneDuckDBControl(app);
@@ -297,13 +299,14 @@ function patchDuckDBRenderer(renderer: DuckDBRendererLike | null | undefined) {
     if (!renderedStyle) return originalLayers;
 
     return originalLayers.map((deckLayer) =>
-      cloneStyledDeckLayer(deckLayer, result.geometryType, renderedStyle),
+      cloneStyledDeckLayer(layerId, deckLayer, result.geometryType, renderedStyle),
     );
   };
   renderer.__geolibreStylePatched = true;
 }
 
 function cloneStyledDeckLayer(
+  layerId: string,
   deckLayer: StyledDeckLayerLike,
   geometryType: string | undefined,
   renderedStyle: DuckDBRenderedStyle,
@@ -346,17 +349,95 @@ function cloneStyledDeckLayer(
   }
 
   return deckLayer.clone({
+    elevationScale: style.extrusionHeightScale,
+    extruded: style.extrusionEnabled,
     getFillColor: fillColor,
+    getElevation: createDuckDBElevationAccessor(layerId, renderedStyle),
     getLineColor: strokeColor,
     getLineWidth: style.strokeWidth,
     lineWidthMinPixels: Math.max(1, style.strokeWidth),
     updateTriggers: {
       ...asRecord(deckLayer.props?.updateTriggers),
+      getElevation: [
+        style.extrusionBase,
+        style.extrusionHeightProperty,
+        style.extrusionHeightScale,
+      ],
       getFillColor: [style.fillColor, style.fillOpacity, opacity],
       getLineColor: [style.strokeColor, opacity],
       getLineWidth: [style.strokeWidth],
     },
   });
+}
+
+function createDuckDBElevationAccessor(
+  layerId: string,
+  renderedStyle: DuckDBRenderedStyle,
+) {
+  return (objectInfo: { data?: unknown; index?: number }): number => {
+    const { style } = renderedStyle;
+    const fallbackHeight = style.extrusionBase ?? 100;
+    const rowIndex = getGeoArrowRowIndex(objectInfo);
+    const rows = getDuckDBRenderedRows(layerId);
+    const row = rowIndex === null ? undefined : rows[rowIndex];
+    const rawValue =
+      row && style.extrusionHeightProperty
+        ? row[style.extrusionHeightProperty]
+        : undefined;
+    const value = Number(rawValue);
+
+    if (!Number.isFinite(value)) return fallbackHeight;
+    return Math.max(0, value + style.extrusionBase);
+  };
+}
+
+function getGeoArrowRowIndex(objectInfo: {
+  data?: unknown;
+  index?: number;
+}): number | null {
+  const table = (
+    objectInfo.data as
+      | {
+          data?: {
+            getChild?: (name: string) => { get?: (index: number) => unknown } | null;
+          };
+        }
+      | undefined
+  )?.data;
+  const index = objectInfo.index;
+  if (typeof index !== "number") return null;
+
+  const rawIndex = table?.getChild?.("__index")?.get?.(index);
+  if (typeof rawIndex === "number" && Number.isFinite(rawIndex)) {
+    return rawIndex;
+  }
+  if (typeof rawIndex === "bigint") {
+    return rawIndex <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(rawIndex) : index;
+  }
+  return index;
+}
+
+function getDuckDBRenderedRows(layerId: string): Record<number, Record<string, unknown>> {
+  const control = duckdbControl as unknown as MutableDuckDBControl | null;
+  const stateLayerId = duckdbControl?.getState().layer?.id;
+  if (stateLayerId !== layerId) return {};
+  const rows = control?.layer?.rows;
+  if (!rows) {
+    warnMissingDuckDBRows(layerId);
+    return {};
+  }
+  return rows;
+}
+
+function warnMissingDuckDBRows(layerId: string): void {
+  if (warnedMissingRowsLayerIds.has(layerId)) return;
+  warnedMissingRowsLayerIds.add(layerId);
+
+  if (import.meta.env.DEV) {
+    console.warn(
+      `DuckDB layer ${layerId} did not expose row data for extrusion heights.`,
+    );
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
