@@ -89,3 +89,21 @@ jobs:
           tagName: ${{ github.event.release.tag_name }}
           args: ${{ matrix.args }}
           uploadPlainBinary: true
+
+      - name: Build MSIX package
+        id: build_msix
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-msix.ps1
+
+      - name: Upload MSIX release asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $msix = "${{ steps.build_msix.outputs.msix_path }}"
+          if (-not (Test-Path $msix)) {
+            throw "No MSIX package was created at '$msix'."
+          }
+          gh release upload "${{ github.event.release.tag_name }}" $msix --clobber
