@@ -28,14 +28,32 @@ export interface DiagnosticsSnapshot {
   errorCount: number;
   warningCount: number;
   networkCount: number;
+  captureNetworkInfo: boolean;
 }
 
 const MAX_DIAGNOSTIC_RECORDS = 500;
 const MAX_FIELD_LENGTH = 3000;
+const CAPTURE_NETWORK_INFO_STORAGE_KEY =
+  "geolibre.diagnostics.captureNetworkInfo";
+
+// Note: called once at module import, so the initial value is frozen for the
+// lifetime of the module. Tests that need a different starting state must
+// mock localStorage before importing this module, or call
+// setCaptureNetworkInfo() to change it afterwards.
+function readStoredCaptureNetworkInfo(): boolean {
+  try {
+    return window.localStorage.getItem(CAPTURE_NETWORK_INFO_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 const listeners = new Set<() => void>();
 let records: DiagnosticRecord[] = [];
 let sequence = 0;
+// Capturing every successful request floods the store and re-renders
+// subscribers on each fetch, so info-level network entries are opt-in.
+let captureNetworkInfo = readStoredCaptureNetworkInfo();
 let snapshot = createSnapshot(records);
 let captureRefCount = 0;
 let captureCleanup: (() => void) | null = null;
@@ -55,6 +73,7 @@ function createSnapshot(nextRecords: DiagnosticRecord[]): DiagnosticsSnapshot {
     errorCount,
     warningCount,
     networkCount,
+    captureNetworkInfo,
   };
 }
 
@@ -152,6 +171,14 @@ function getSnapshot(): DiagnosticsSnapshot {
 }
 
 export function appendDiagnostic(input: DiagnosticInput): void {
+  if (
+    input.category === "network" &&
+    input.level === "info" &&
+    !captureNetworkInfo
+  ) {
+    return;
+  }
+
   const record: DiagnosticRecord = {
     ...input,
     id: `diagnostic-${Date.now()}-${sequence++}`,
@@ -168,6 +195,30 @@ export function appendDiagnostic(input: DiagnosticInput): void {
 
 export function clearDiagnostics(): void {
   records = [];
+  emitChange();
+}
+
+/**
+ * Enables or disables capturing info-level network diagnostics (successful
+ * and aborted requests). Disabled by default to avoid the overhead of
+ * recording every request; the choice persists across sessions.
+ *
+ * @param enabled - Whether info-level network entries should be recorded.
+ */
+export function setCaptureNetworkInfo(enabled: boolean): void {
+  if (captureNetworkInfo === enabled) return;
+  captureNetworkInfo = enabled;
+  try {
+    // The key is only present when the user has explicitly opted in; the
+    // default-off state matches a pristine localStorage.
+    if (enabled) {
+      window.localStorage.setItem(CAPTURE_NETWORK_INFO_STORAGE_KEY, "true");
+    } else {
+      window.localStorage.removeItem(CAPTURE_NETWORK_INFO_STORAGE_KEY);
+    }
+  } catch {
+    // Persistence is best-effort; the in-memory flag still applies.
+  }
   emitChange();
 }
 
