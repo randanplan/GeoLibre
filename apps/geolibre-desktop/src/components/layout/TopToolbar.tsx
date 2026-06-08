@@ -17,6 +17,7 @@ import {
   closeLegendPanel,
   closeMaplibreComponentControls,
   closePlanetaryComputerPanel,
+  closePrintPanel,
   closeRasterLayerPanel,
   closeSearchPlacesPanel,
   closeThreeDTilesLayerPanel,
@@ -27,6 +28,7 @@ import {
   isColorbarPanelVisible,
   isHtmlPanelVisible,
   isLegendPanelVisible,
+  isPrintPanelVisible,
   isSearchPlacesPanelVisible,
   openColorbarPanel,
   openHtmlPanel,
@@ -34,6 +36,7 @@ import {
   openLidarLayerPanel,
   openPlanetaryComputerPanel,
   openPMTilesLayerPanel,
+  openPrintPanel,
   openRasterLayerPanel,
   openSearchPlacesPanel,
   openSplattingLayerPanel,
@@ -45,6 +48,7 @@ import {
   subscribeEarthEnginePanel,
   subscribeHtmlPanel,
   subscribeLegendPanel,
+  subscribePrintPanel,
   subscribeSearchPlacesPanel,
   toggleEarthEnginePanel,
   WEB_SERVICE_PLUGIN_IDS,
@@ -88,6 +92,7 @@ import {
   Map,
   MessageSquare,
   Moon,
+  Printer,
   Puzzle,
   RefreshCw,
   Save,
@@ -485,6 +490,18 @@ export function TopToolbar({
     }
     openSearchPlacesPanel(appApi);
   };
+  const printPanelVisible = useSyncExternalStore(
+    subscribePrintPanel,
+    isPrintPanelVisible,
+    isPrintPanelVisible,
+  );
+  const handleTogglePrintPanel = () => {
+    if (printPanelVisible) {
+      closePrintPanel();
+      return;
+    }
+    openPrintPanel(appApi);
+  };
   const colorbarPanelVisible = useSyncExternalStore(
     subscribeColorbarPanel,
     isColorbarPanelVisible,
@@ -683,6 +700,12 @@ export function TopToolbar({
           <DropdownMenuItem onSelect={() => void handleSaveAs()}>
             <FilePen className="mr-2 h-3.5 w-3.5" />
             Save As...
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={handleTogglePrintPanel}>
+            <Printer className="mr-2 h-3.5 w-3.5" />
+            Print...
+            {printPanelVisible ? " ✓" : ""}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
