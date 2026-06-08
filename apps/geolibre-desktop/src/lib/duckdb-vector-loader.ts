@@ -35,25 +35,47 @@ export interface DuckDbVectorFile {
   siblingFiles?: DuckDbVectorFile[];
 }
 
-function getDatabase(): Promise<duckdb.AsyncDuckDB> {
+export function getDatabase(): Promise<duckdb.AsyncDuckDB> {
   dbPromise ??= createDatabase();
   return dbPromise;
 }
 
-let spatialExtensionLoaded = false;
+let spatialExtensionPromise: Promise<void> | null = null;
 
 /**
  * Install and load the DuckDB spatial extension once per database instance.
  * `getDatabase` returns a memoized singleton, so the extension persists across
  * connections and the redundant INSTALL/LOAD queries are skipped on reuse.
+ *
+ * The load is memoized as a promise rather than a boolean so concurrent callers
+ * (the function is exported and reused) share a single INSTALL/LOAD instead of
+ * each racing to run it. On failure the memo is cleared so a later call retries.
  */
-async function ensureSpatialExtension(
+export async function ensureSpatialExtension(
   connection: duckdb.AsyncDuckDBConnection,
+  beforeLoad?: () => Promise<void>,
 ): Promise<void> {
-  if (spatialExtensionLoaded) return;
-  await connection.query("INSTALL spatial");
-  await connection.query("LOAD spatial");
-  spatialExtensionLoaded = true;
+  spatialExtensionPromise ??= (async () => {
+    // duckdb-wasm 1.33.1-dev45 breaks remote read_parquet if the spatial
+    // extension is loaded before the first remote HTTP read on the database.
+    // `beforeLoad` lets the caller warm up that path (a pre-spatial remote read)
+    // before INSTALL/LOAD, which is the only thing that initialises it.
+    if (beforeLoad) {
+      try {
+        await beforeLoad();
+      } catch {
+        // Warm-up is best-effort; a failure here must not block spatial loading.
+      }
+    }
+    await connection.query("INSTALL spatial");
+    await connection.query("LOAD spatial");
+  })();
+  try {
+    await spatialExtensionPromise;
+  } catch (error) {
+    spatialExtensionPromise = null;
+    throw error;
+  }
 }
 
 async function createDatabase(): Promise<duckdb.AsyncDuckDB> {
@@ -62,14 +84,19 @@ async function createDatabase(): Promise<duckdb.AsyncDuckDB> {
   const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
   const db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  // Open the database so its runtime/filesystem config is initialised. Without
+  // this, locally registered buffers still read, but remote HTTP reads fail
+  // (e.g. read_parquet over https throws "stoi: no conversion"). This mirrors
+  // how maplibre-gl-duckdb initialises the engine that reads remote files.
+  await db.open({});
   return db;
 }
 
-function quoteSqlString(value: string): string {
+export function quoteSqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function quoteIdentifier(value: string): string {
+export function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
@@ -78,7 +105,7 @@ function exportBaseName(): string {
   return `__geolibre_export_${Date.now()}_${suffix}`;
 }
 
-function rowsFromResult(result: { toArray: () => DuckDbRow[] }) {
+export function rowsFromResult(result: { toArray: () => DuckDbRow[] }) {
   return result.toArray().map((row) =>
     typeof row.toJSON === "function" ? row.toJSON() : { ...row },
   );
@@ -86,7 +113,7 @@ function rowsFromResult(result: { toArray: () => DuckDbRow[] }) {
 
 // DuckDB Spatial reports CRS-annotated geometry types such as
 // GEOMETRY('EPSG:4326'), so match on the prefix rather than equality.
-function isGeometryColumnType(columnType: unknown): boolean {
+export function isGeometryColumnType(columnType: unknown): boolean {
   return (
     typeof columnType === "string" &&
     columnType.toUpperCase().startsWith("GEOMETRY")
