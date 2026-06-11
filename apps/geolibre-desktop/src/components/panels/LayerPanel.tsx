@@ -9,7 +9,10 @@ import {
 } from "react";
 import { isDuckDBQueryLayer, useAppStore } from "@geolibre/core";
 import type { GeoLibreLayer } from "@geolibre/core";
-import { canEditLayerGeometry } from "@geolibre/plugins";
+import {
+  canEditLayerGeometry,
+  reloadVectorControlLayer,
+} from "@geolibre/plugins";
 import type { MapController } from "@geolibre/map";
 import { isPlaceholderLayer, placeholderMessage } from "@geolibre/map";
 import {
@@ -54,6 +57,7 @@ import {
 import {
   getLayerRefreshConfig,
   isRefreshableLayer,
+  isVectorControlRefreshLayer,
   MIN_REFRESH_INTERVAL_MS,
   refreshGeoJsonLayer,
   setLayerRefreshConfig,
@@ -299,6 +303,48 @@ export function LayerPanel({
       }));
 
       try {
+        if (isVectorControlRefreshLayer(layer)) {
+          const info = await reloadVectorControlLayer(layer.id);
+          if (!info) {
+            // The control is unavailable (panel never opened, or torn down
+            // and not yet replayed) or no longer knows this layer id.
+            // Automatic ticks fire on a timer the user didn't initiate, so
+            // skip silently and clear the transient note instead of surfacing
+            // an error every interval until the control comes back.
+            if (automatic) {
+              setRefreshStatuses((current) => {
+                if (!current[layer.id]) return current;
+                const next = { ...current };
+                delete next[layer.id];
+                return next;
+              });
+              return;
+            }
+            throw new Error(
+              "Could not refresh this layer. Try re-opening the Add Vector Layer panel.",
+            );
+          }
+          // reloadLayer fires `layerupdated`, which drives
+          // syncVectorLayersToStore to persist the refreshed featureCount (and
+          // bounds) into the store. We intentionally don't call updateLayer
+          // here: the metadata write is handled by that event, and a second
+          // write would risk clobbering the synced values. `info` feeds only
+          // the toast below.
+          const featureCount =
+            typeof info.featureCount === "number" ? info.featureCount : null;
+          setRefreshStatuses((current) => ({
+            ...current,
+            [layer.id]: {
+              type: "success",
+              message:
+                featureCount === null
+                  ? "Refreshed."
+                  : `Refreshed ${featureCount.toLocaleString()} features.`,
+            },
+          }));
+          scheduleStatusClear(layer.id);
+          return;
+        }
         const { geojson, featureCount } = await refreshGeoJsonLayer(layer);
         const latest = useAppStore
           .getState()
