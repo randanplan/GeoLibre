@@ -105,6 +105,7 @@ export {
 export {
   RASTER_MAX_CLASSES,
   RASTER_MIN_CLASSES,
+  RASTER_MIN_CUSTOM_COLORS,
   type RasterBandStats,
   type RasterClassificationMethod,
   type RasterSymbology,
@@ -117,6 +118,7 @@ export {
   RASTER_SOURCE_KIND,
   getRasterBandStats,
 } from "./plugins/raster-symbology-texture";
+export { colormapColors, warmColormapColors } from "./plugins/colormap-colors";
 export {
   closeVectorLayerPanel,
   openVectorLayerPanel,
