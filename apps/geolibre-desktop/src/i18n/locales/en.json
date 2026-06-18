@@ -746,6 +746,10 @@
       "chooseGeoTiff": "Choose a GeoTIFF",
       "downloadGeoTiff": "Download GeoTIFF",
       "chooseInputRaster": "Choose an input raster.",
+      "useAddedLayer": "Use a layer on the map",
+      "useAddedLayerPlaceholder": "Choose a layer…",
+      "loadingLayer": "Loading layer…",
+      "layerLoadError": "Could not load the selected layer.",
       "runningInBrowser": "Running \"{{tool}}\" in your browser...",
       "loadedRaster": "Loaded raster: {{width}}×{{height}}, {{bands}} band(s).",
       "computedInBrowser": "Computed \"{{tool}}\" in the browser.",
@@ -1184,6 +1188,7 @@
   },
   "layers": {
     "exportGeoTiff": "GeoTIFF (COG)",
+    "openRasterStylePanel": "Edit raster style…",
     "exportRasterSuccess": "Raster exported.",
     "exportRasterError": "Could not export this raster.",
     "typeBasemap": "basemap",
