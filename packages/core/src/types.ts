@@ -468,6 +468,53 @@ export interface MapViewState {
 }
 
 /**
+ * Multi-map (split/grid) support. The workspace can show several map panes in a
+ * `rows x cols` grid. Pane 0 is always the *primary* map: it keeps the existing
+ * single-map wiring (the global `mapView` + `basemap*` fields, the layer/style
+ * panels, plugins, deck.gl). Panes 1..N are *secondary* maps described by
+ * `SecondaryMapView` records: every pane shares the same basemap and the same
+ * `layers`, but each secondary pane may override which layers are visible so
+ * different panes can show different layers. When `syncView` is on,
+ * panning/zooming any pane mirrors the camera to every other pane.
+ */
+export interface MapGridLayout {
+  /** Grid rows (>= 1). */
+  rows: number;
+  /** Grid columns (>= 1). `rows * cols` is the total number of panes. */
+  cols: number;
+  /** When true, all panes share a synchronized camera. */
+  syncView: boolean;
+}
+
+/**
+ * A non-primary map pane: shares the primary map's basemap and layers, with its
+ * own camera and per-layer visibility overrides.
+ */
+export interface SecondaryMapView {
+  /** Stable id, used as the React key and the sync-group registration id. */
+  id: string;
+  view: MapViewState;
+  /** Optional user-entered label shown on the pane (e.g. a date or scenario). */
+  label?: string;
+  /**
+   * Per-layer visibility overrides keyed by layer id. A layer absent from this
+   * map inherits the primary map's visibility (`layer.visible`); an entry forces
+   * the layer visible (`true`) or hidden (`false`) in this pane only.
+   */
+  layerVisibility: Record<string, boolean>;
+}
+
+/** The default single-map grid (one pane, sync enabled so it turns on cleanly). */
+export const DEFAULT_MAP_GRID_LAYOUT: MapGridLayout = {
+  rows: 1,
+  cols: 1,
+  syncView: true,
+};
+
+/** Maximum rows or columns in the map grid (so at most a 4x4 = 16-pane grid). */
+export const MAX_MAP_GRID_DIM = 4;
+
+/**
  * Live multi-user collaboration (issue #307). These types describe the
  * *ephemeral* session state the store holds while a live session is active. It
  * is intentionally never written to the `.geolibre.json` project file (the
@@ -825,6 +872,19 @@ export interface GeoLibreProject {
   widgets?: DashboardWidget[];
   /** Number of columns in the Dashboard widget grid; omitted when default. */
   dashboardColumns?: number;
+  /**
+   * Multi-map grid layout; omitted (single 1x1 pane) for default projects so
+   * legacy readers and single-map files are unaffected.
+   */
+  mapLayout?: MapGridLayout;
+  /**
+   * Secondary map panes (everything past the primary pane). Omitted when the
+   * grid is a single pane. The primary pane uses the top-level `mapView` /
+   * `basemap*` fields.
+   */
+  secondaryMapViews?: SecondaryMapView[];
+  /** User-entered label for the primary pane; omitted when empty. */
+  primaryMapLabel?: string;
   metadata: Record<string, unknown>;
 }
 

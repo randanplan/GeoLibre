@@ -230,6 +230,9 @@ export function useProjectFileActions(mapControllerRef: MapControllerRef) {
       models: state.models,
       widgets: state.widgets,
       dashboardColumns: state.dashboardColumns,
+      mapLayout: state.mapLayout,
+      secondaryMapViews: state.secondaryMapViews,
+      primaryMapLabel: state.primaryMapLabel,
       metadata: state.metadata,
     });
     return {
