@@ -89,6 +89,77 @@ function splitAntimeridian(bbox: Bbox): Bbox[] {
     : [bbox];
 }
 
+/** Resolved zoom plan for the offline download dialog. */
+export interface OfflineZoomPlan {
+  /** Lowest zoom to download — the snapshot view's integer zoom, never above the map's max. */
+  baseZoom: number;
+  /** Highest zoom to download. Always `>= baseZoom` (never an inverted range). */
+  maxZoom: number;
+  /**
+   * Number of extra zoom levels available above the base zoom, capped at the
+   * hard maximum. This is the slider's upper bound; it is `0` exactly when
+   * `canIncludeExtra` is false (the view is at the map's max zoom). Callers
+   * should gate on `canIncludeExtra` rather than relying on a non-zero value.
+   */
+  maxExtraLevels: number;
+  /**
+   * Whether extra higher-zoom detail can be added at all. False when the view is
+   * already at the map's maximum zoom, where there is nothing deeper to fetch —
+   * the dialog hides the "include extra" control in that case.
+   */
+  canIncludeExtra: boolean;
+}
+
+/**
+ * Resolve the zoom range an offline download should cover from the dialog's
+ * inputs, bounded by the map's actual maximum zoom rather than a fixed ceiling.
+ *
+ * This keeps the preview honest at high zoom: the extra-detail range tracks what
+ * the map can really render (its configurable max zoom, up to 24), the slider
+ * only offers levels that have an effect, and the resulting range is never
+ * inverted (e.g. a "24–22" backwards range at the top of the zoom range).
+ *
+ * Args:
+ *   viewZoom: The snapshot view's zoom (may be fractional).
+ *   mapMaxZoom: The map's configured maximum zoom.
+ *   includeExtra: Whether the "include extra detail levels" toggle is on.
+ *   extraLevels: The extra-levels slider value. Floored to an integer and
+ *     treated as at least 1 when `includeExtra` is on.
+ *   hardMaxExtraLevels: The slider's absolute upper bound (the dialog's cap).
+ *     Must be `>= 1`; the dialog passes a fixed positive constant.
+ *
+ * Returns:
+ *   The resolved {@link OfflineZoomPlan}.
+ */
+export function planOfflineZoom(
+  viewZoom: number,
+  mapMaxZoom: number,
+  includeExtra: boolean,
+  extraLevels: number,
+  hardMaxExtraLevels: number,
+): OfflineZoomPlan {
+  const ceil = Math.max(0, Math.floor(mapMaxZoom));
+  const baseZoom = Math.min(Math.max(0, Math.floor(viewZoom)), ceil);
+  const canIncludeExtra = baseZoom < ceil;
+  // 0 when the view is already at the map's max zoom. The slider's `max` is
+  // gated behind `canIncludeExtra` in the dialog, so it never receives 0; when
+  // it is shown, `ceil - baseZoom >= 1` together with the `hardMaxExtraLevels
+  // >= 1` precondition guarantees a valid (non-inverted) range.
+  const maxExtraLevels = Math.min(hardMaxExtraLevels, ceil - baseZoom);
+  const effectiveExtra =
+    includeExtra && canIncludeExtra
+      ? // Sub-1 values are treated as 1 extra level; the dialog's slider enforces
+        // min=1, so this floor only guards out-of-range programmatic callers.
+        Math.min(Math.max(1, Math.floor(extraLevels)), maxExtraLevels)
+      : 0;
+  return {
+    baseZoom,
+    maxZoom: baseZoom + effectiveExtra,
+    maxExtraLevels,
+    canIncludeExtra,
+  };
+}
+
 /**
  * Count the tiles covering `bbox` across `[minZoom, maxZoom]` without
  * materializing them — used to preview download size before committing.

@@ -25,6 +25,7 @@ import {
   collectOfflineUrls,
   countOfflineTiles,
   hasActiveServiceWorker,
+  planOfflineZoom,
   warmUrls,
   type WarmProgress,
 } from "../../lib/offline-tiles";
@@ -52,6 +53,14 @@ const CACHED_TILE_HOST = /(?:^|\.)(?:openfreemap\.org|cartocdn\.com)$/;
 const AVG_TILE_BYTES = 30 * 1024;
 
 const MAX_EXTRA_LEVELS = 5;
+
+/**
+ * Fallback map max zoom for the rare case where the live map can't be read at
+ * dialog-open time. Matches the project's default max zoom (see
+ * `DEFAULT_PROJECT_PREFERENCES.map.maxZoom`) so the degraded path doesn't revert
+ * to the old hard-coded 22 ceiling; the real value comes from `getMaxZoom()`.
+ */
+const DEFAULT_MAX_ZOOM = 24;
 
 /** Default and bounds for the advanced concurrency control. */
 const DEFAULT_CONCURRENCY = 6;
@@ -103,16 +112,32 @@ export function OfflineRegionDialog({
   const progressRef = useRef(progress);
   progressRef.current = progress;
 
-  // Snapshot the view when the dialog opens; re-reading live would let the
-  // estimate drift while the user is interacting with the dialog.
+  // Snapshot the view (and the map's configured max zoom) when the dialog opens;
+  // re-reading live would let the estimate drift while the user is interacting
+  // with the dialog.
   const view = useMemo(() => {
     if (!open) return null;
     return mapControllerRef.current?.readView() ?? null;
   }, [open, mapControllerRef]);
+  const mapMaxZoom = useMemo(() => {
+    if (!open) return DEFAULT_MAX_ZOOM;
+    const max = mapControllerRef.current?.getMap()?.getMaxZoom();
+    return typeof max === "number" && Number.isFinite(max)
+      ? max
+      : DEFAULT_MAX_ZOOM;
+  }, [open, mapControllerRef]);
 
-  const baseZoom = view ? Math.floor(view.zoom) : 0;
-  const effectiveExtra = includeExtra ? extraLevels : 0;
-  const maxZoom = Math.min(22, baseZoom + effectiveExtra);
+  // Bound the extra-detail range by the map's real max zoom (configurable, up to
+  // 24) instead of a fixed ceiling, so the slider tracks what the map can render,
+  // every step has an effect, and the range never inverts at the top zoom (#750,
+  // #751).
+  const { baseZoom, maxZoom, maxExtraLevels, canIncludeExtra } = planOfflineZoom(
+    view?.zoom ?? 0,
+    mapMaxZoom,
+    includeExtra,
+    extraLevels,
+    MAX_EXTRA_LEVELS,
+  );
   const bbox = (view?.bbox ?? null) as Bbox | null;
 
   // Tile count is resolved asynchronously: it clamps each source to its own
@@ -349,18 +374,23 @@ export function OfflineRegionDialog({
         )}
 
         <div className="space-y-4 py-2">
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              className="h-4 w-4"
-              type="checkbox"
-              checked={includeExtra}
-              disabled={controlsDisabled}
-              onChange={(event) => setIncludeExtra(event.target.checked)}
-            />
-            {t("offline.includeExtra")}
-          </label>
+          {/* At the map's max zoom there is no deeper detail to fetch, so the
+              "include extra" control is hidden — offering it would only produce
+              an empty (or inverted) range (#751). */}
+          {canIncludeExtra && (
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                className="h-4 w-4"
+                type="checkbox"
+                checked={includeExtra}
+                disabled={controlsDisabled}
+                onChange={(event) => setIncludeExtra(event.target.checked)}
+              />
+              {t("offline.includeExtra")}
+            </label>
+          )}
 
-          {includeExtra ? (
+          {canIncludeExtra && includeExtra ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <Label>{t("offline.detailLevels")}</Label>
@@ -375,9 +405,14 @@ export function OfflineRegionDialog({
               <Slider
                 aria-label={t("offline.detailLevels")}
                 min={1}
-                max={MAX_EXTRA_LEVELS}
+                max={maxExtraLevels}
                 step={1}
-                value={[extraLevels]}
+                // Clamp only the displayed value, not the `extraLevels` state:
+                // `maxExtraLevels` is derived from the view + map max zoom
+                // snapshotted at open time and `extraLevels` resets to 1 on open,
+                // so the two can't diverge within a session. planOfflineZoom
+                // clamps again, so the footer stays correct regardless.
+                value={[Math.min(extraLevels, maxExtraLevels)]}
                 onValueChange={(value: number[]) => setExtraLevels(value[0])}
                 disabled={controlsDisabled}
               />

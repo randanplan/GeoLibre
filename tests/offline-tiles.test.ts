@@ -6,6 +6,7 @@ import {
   enumerateTiles,
   expandTileUrl,
   lngLatToTile,
+  planOfflineZoom,
   tileRangeForBbox,
   tileToQuadkey,
   warmUrls,
@@ -215,5 +216,81 @@ describe("warmUrls", () => {
     // An abort short-circuits counting, so nothing is recorded as done/failed.
     assert.equal(result.done, 0);
     assert.equal(result.failed, 0);
+  });
+});
+
+describe("planOfflineZoom", () => {
+  const HARD_MAX = 5;
+
+  it("downloads the current view only when extra detail is off", () => {
+    const plan = planOfflineZoom(10.4, 24, false, 3, HARD_MAX);
+    assert.equal(plan.baseZoom, 10);
+    assert.equal(plan.maxZoom, 10);
+    assert.equal(plan.canIncludeExtra, true);
+    assert.equal(plan.maxExtraLevels, HARD_MAX);
+  });
+
+  it("adds the chosen extra levels on top of the base zoom", () => {
+    const plan = planOfflineZoom(10, 24, true, 3, HARD_MAX);
+    assert.equal(plan.baseZoom, 10);
+    assert.equal(plan.maxZoom, 13);
+    assert.equal(plan.canIncludeExtra, true);
+    assert.equal(plan.maxExtraLevels, HARD_MAX);
+  });
+
+  it("treats extraLevels below 1 as 1 when includeExtra is on", () => {
+    const plan = planOfflineZoom(10, 24, true, 0, HARD_MAX);
+    assert.equal(plan.baseZoom, 10);
+    assert.equal(plan.maxZoom, 11); // Math.max(1, 0) → 1 extra level applied
+    assert.equal(plan.canIncludeExtra, true);
+  });
+
+  it("caps the extra range at the map's max zoom rather than a fixed 22", () => {
+    // baseZoom 22, map max 24 → only 2 levels are meaningful (22→24), and the
+    // slider's upper bound reflects that so every step has an effect (#750).
+    const plan = planOfflineZoom(22, 24, true, 5, HARD_MAX);
+    assert.equal(plan.maxExtraLevels, 2);
+    assert.equal(plan.maxZoom, 24);
+  });
+
+  it("caps maxExtraLevels to 1 when only one level separates base from ceiling", () => {
+    const plan = planOfflineZoom(23, 24, true, 5, HARD_MAX);
+    assert.equal(plan.maxExtraLevels, 1);
+    assert.equal(plan.maxZoom, 24);
+  });
+
+  it("floors a fractional mapMaxZoom", () => {
+    // getMaxZoom() can return a non-integer; floor(24.7) = 24.
+    const plan = planOfflineZoom(10, 24.7, true, 3, HARD_MAX);
+    assert.equal(plan.maxExtraLevels, HARD_MAX);
+    assert.equal(plan.maxZoom, 13);
+  });
+
+  it("never produces an inverted range at the map's max zoom (#751)", () => {
+    // At zoom 24 of a 24-max map there is nothing deeper to fetch: extra detail
+    // is unavailable and the range stays at the base zoom, not a backwards
+    // "24–22".
+    const plan = planOfflineZoom(24, 24, true, 3, HARD_MAX);
+    assert.equal(plan.canIncludeExtra, false);
+    assert.equal(plan.baseZoom, 24);
+    assert.equal(plan.maxZoom, 24);
+    assert.equal(plan.maxExtraLevels, 0);
+    assert.ok(plan.maxZoom >= plan.baseZoom);
+  });
+
+  it("clamps the base zoom to the map's max zoom", () => {
+    // A view zoom above the configured max (shouldn't happen, but guard it)
+    // still yields a sane, non-inverted plan.
+    const plan = planOfflineZoom(30, 24, false, 1, HARD_MAX);
+    assert.equal(plan.baseZoom, 24);
+    assert.equal(plan.maxZoom, 24);
+    assert.equal(plan.canIncludeExtra, false);
+    assert.equal(plan.maxExtraLevels, 0); // no room for extra levels at the ceiling
+  });
+
+  it("respects the hard cap on extra levels below the map's max zoom", () => {
+    const plan = planOfflineZoom(5, 24, true, 9, HARD_MAX);
+    assert.equal(plan.maxExtraLevels, HARD_MAX);
+    assert.equal(plan.maxZoom, 5 + HARD_MAX);
   });
 });
