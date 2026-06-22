@@ -24,10 +24,19 @@ export class ShareUploadError extends Error {
 
   constructor(message: string, code?: ShareUploadErrorCode) {
     super(message);
+    // Restore the prototype chain so `instanceof ShareUploadError` holds even if
+    // this is ever transpiled to a target where `extends Error` loses it; the
+    // dialog's error branching depends on that check.
+    Object.setPrototypeOf(this, new.target.prototype);
     this.name = "ShareUploadError";
     this.code = code;
   }
 }
+
+// Sentinel the share server returns (as a plain 400 body) when an authenticated
+// account has no username yet. Kept as a named constant so the one coupling
+// point to the server's error vocabulary is obvious and easy to update.
+const USERNAME_REQUIRED_PATTERN = /username required/i;
 
 export interface ShareUploadResult {
   username: string;
@@ -213,7 +222,7 @@ async function uploadErrorInfo(
     // This substring must stay in sync with the server's error text: if the
     // server rephrases or localizes the message, the code falls back to
     // undefined and the dialog shows the raw server string instead.
-    const code = /username required/i.test(message)
+    const code = USERNAME_REQUIRED_PATTERN.test(message)
       ? ("username-required" as const)
       : undefined;
     return { message, code };
