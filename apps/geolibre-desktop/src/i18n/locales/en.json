@@ -603,7 +603,9 @@
     "visibilityPrivate": "Private (only you)",
     "shareButton": "Share",
     "sharing": "Sharing…",
-    "errorFallback": "Could not share the project."
+    "errorFallback": "Could not share the project.",
+    "usernameRequired": "Set a username on your share.geolibre.app account before sharing. Open your account settings to choose one, then try again.",
+    "openAccountSettings": "Open account settings"
   },
   "language": {
     "label": "Language",

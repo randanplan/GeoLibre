@@ -18,7 +18,9 @@ import {
   isShareableTitle,
   MAX_PROJECT_TITLE_LENGTH,
   resolveShareBaseUrl,
+  ShareUploadError,
   uploadProjectToShare,
+  type ShareUploadErrorCode,
   type ShareUploadResult,
   type ShareVisibility,
 } from "../../lib/share-geolibre";
@@ -52,6 +54,7 @@ export function ShareProjectDialog({
   const [visibility, setVisibility] = useState<ShareVisibility>("unlisted");
   const [status, setStatus] = useState<"idle" | "uploading">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<ShareUploadErrorCode | null>(null);
   const [result, setResult] = useState<ShareUploadResult | null>(null);
   const [copied, setCopied] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -67,6 +70,7 @@ export function ShareProjectDialog({
       setVisibility("unlisted");
       setStatus("idle");
       setError(null);
+      setErrorCode(null);
       setResult(null);
       setCopied(false);
     } else {
@@ -93,6 +97,7 @@ export function ShareProjectDialog({
     // renders would otherwise start a concurrent, non-idempotent upload.
     if (abortRef.current) return;
     setError(null);
+    setErrorCode(null);
     setStatus("uploading");
     const controller = new AbortController();
     abortRef.current = controller;
@@ -108,7 +113,15 @@ export function ShareProjectDialog({
       setResult(uploaded);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(err instanceof Error ? err.message : t("share.errorFallback"));
+      // A missing account username gets dedicated, actionable UI (a deep link to
+      // the website's settings) rather than the raw server string.
+      if (err instanceof ShareUploadError && err.code === "username-required") {
+        setErrorCode("username-required");
+        setError(null);
+      } else {
+        setError(err instanceof Error ? err.message : t("share.errorFallback"));
+        setErrorCode(null);
+      }
     } finally {
       // Only the controller that is still current clears state, so an aborted
       // (superseded) request never flips a newer one back to idle.
@@ -253,11 +266,24 @@ export function ShareProjectDialog({
               </Select>
             </div>
 
-            {error && (
+            {errorCode === "username-required" ? (
+              <div className="space-y-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <p>{t("share.usernameRequired")}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void openExternalLink(SETTINGS_TOKEN_URL)}
+                >
+                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                  {t("share.openAccountSettings")}
+                </Button>
+              </div>
+            ) : error ? (
               <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">
                 {error}
               </p>
-            )}
+            ) : null}
 
             <div className="flex justify-end gap-2">
               {/* Stays enabled during upload: closing the dialog aborts the

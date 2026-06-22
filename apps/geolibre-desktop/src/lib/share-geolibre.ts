@@ -6,6 +6,29 @@ import { DEFAULT_PROJECT_NAME } from "@geolibre/core";
 
 export type ShareVisibility = "public" | "unlisted" | "private";
 
+/**
+ * Machine-readable cause for an upload failure the dialog can react to. Only
+ * conditions that warrant dedicated UI (beyond showing the message) get a code.
+ * `username-required` means the account has no username yet, which the user must
+ * set on the share.geolibre.app website before any upload can succeed.
+ */
+export type ShareUploadErrorCode = "username-required";
+
+/**
+ * Error thrown by {@link uploadProjectToShare}. Carries a human-readable message
+ * plus an optional {@link ShareUploadErrorCode} so the dialog can render targeted
+ * guidance (e.g. a deep link to account settings) instead of a bare string.
+ */
+export class ShareUploadError extends Error {
+  readonly code?: ShareUploadErrorCode;
+
+  constructor(message: string, code?: ShareUploadErrorCode) {
+    super(message);
+    this.name = "ShareUploadError";
+    this.code = code;
+  }
+}
+
 export interface ShareUploadResult {
   username: string;
   slug: string;
@@ -146,7 +169,8 @@ export async function uploadProjectToShare(
   }
 
   if (!response.ok) {
-    throw new Error(await uploadErrorMessage(response));
+    const { message, code } = await uploadErrorInfo(response);
+    throw new ShareUploadError(message, code);
   }
 
   const payload = (await response.json().catch(() => ({}))) as ShareProjectResponse;
@@ -163,15 +187,17 @@ export async function uploadProjectToShare(
   };
 }
 
-async function uploadErrorMessage(response: Response): Promise<string> {
+async function uploadErrorInfo(
+  response: Response,
+): Promise<{ message: string; code?: ShareUploadErrorCode }> {
   if (response.status === 401) {
-    return "Invalid or expired API token. Update it in Settings.";
+    return { message: "Invalid or expired API token. Update it in Settings." };
   }
   if (response.status === 403) {
-    return "This API token is not allowed to upload projects.";
+    return { message: "This API token is not allowed to upload projects." };
   }
   if (response.status === 429) {
-    return "Too many uploads. Please wait a while and try again.";
+    return { message: "Too many uploads. Please wait a while and try again." };
   }
   const body = (await response.json().catch(() => null)) as
     | { error?: string }
@@ -180,7 +206,14 @@ async function uploadErrorMessage(response: Response): Promise<string> {
   // non-HTTPS share URL cannot render a wall of text in the dialog. Slice by
   // code point so the cap can't orphan a UTF-16 surrogate pair.
   if (typeof body?.error === "string" && body.error.trim()) {
-    return [...body.error].slice(0, 300).join("");
+    const message = [...body.error].slice(0, 300).join("");
+    // The share server returns this on a generic 400 when the account has no
+    // username yet. Flag it so the dialog can point the user at the website's
+    // account settings (where usernames are set), not the local app settings.
+    const code = /username required/i.test(message)
+      ? ("username-required" as const)
+      : undefined;
+    return { message, code };
   }
-  return `Upload failed (HTTP ${response.status}).`;
+  return { message: `Upload failed (HTTP ${response.status}).` };
 }
