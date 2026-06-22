@@ -278,7 +278,11 @@ function normalizeConfig(state: unknown): TimeSliderConfig | null {
   const candidate = state as Partial<TimeSliderConfig>;
   if (
     typeof candidate.startDate !== "string" ||
-    typeof candidate.endDate !== "string" ||
+    // endDate is optional: an "open" range (defaulted to the current date) is
+    // saved without it so reopening re-resolves the end to today. Reject only a
+    // present, non-null value that is not a string (treat both an absent key and
+    // an explicit null as the open-end sentinel).
+    (candidate.endDate != null && typeof candidate.endDate !== "string") ||
     typeof candidate.granularity !== "string" ||
     (candidate.currentDate !== undefined &&
       typeof candidate.currentDate !== "string") ||
@@ -307,7 +311,10 @@ function normalizeConfig(state: unknown): TimeSliderConfig | null {
   ) {
     return null;
   }
-  return candidate as TimeSliderConfig;
+  // Normalize an open end to `undefined` (never `null`) so the open-end sentinel
+  // the library expects (`endDate?: string`) is honored even if a hand-edited
+  // project carried `"endDate": null`, rather than leaking null past the cast.
+  return { ...candidate, endDate: candidate.endDate ?? undefined } as TimeSliderConfig;
 }
 
 // Only sourceadd/sourceremove change the store's layer set. statechange also
@@ -350,7 +357,10 @@ let lastBoundRangeKey: string | null = null;
 // their own range across a bind/unbind cycle.
 let preBindingRange: {
   start: string;
-  end: string;
+  // undefined when the captured range had an "open" end (auto, defaulting to
+  // today); restored as-is so setRange re-opens it instead of pinning the saved
+  // value (setRange treats a null/undefined end as open).
+  end: string | undefined;
   granularity: TimeBinding["granularity"];
 } | null = null;
 // Guards our own timeFilter writes from re-entering the store subscription.
