@@ -68,6 +68,7 @@ import { useEmbedBridge } from "../../hooks/useEmbedBridge";
 import { useRasterIdentify } from "../../hooks/useRasterIdentify";
 import {
   useAutoCollapsedPanel,
+  useReplaceStylePanelId,
   useRightPanelState,
 } from "../../hooks/useRightPanels";
 import { BoundsRestrictionIndicator } from "./BoundsRestrictionIndicator";
@@ -89,6 +90,7 @@ import {
   clampPluginPanelWidth,
 } from "../panels/PluginRightPanel";
 import { StylePanel } from "../panels/StylePanel";
+import { SharedRightSidebar } from "../panels/SharedRightSidebar";
 import { StoryMapPanel } from "../storymap/StoryMapPanel";
 import { StoryMapPresenter } from "../storymap/StoryMapPresenter";
 import { DiagnosticsDialog } from "./DiagnosticsDialog";
@@ -435,6 +437,9 @@ export function DesktopShell({
   // across the dock slots, so a user resize survives moving the panel without a
   // module-level global (which would leak across embeds).
   const autoCollapsedPanel = useAutoCollapsedPanel();
+  // When set, a plugin panel is docked in the shared-rail (`replace-style`) mode
+  // and takes over the Style sidebar surface (issue #765).
+  const replaceStylePanelId = useReplaceStylePanelId();
   const [pluginPanelWidth, setPluginPanelWidth] = useState(
     PLUGIN_PANEL_DEFAULT_WIDTH,
   );
@@ -1439,39 +1444,58 @@ export function DesktopShell({
             <FloatingPanels />
           </SectionErrorBoundary>
         </main>
-        <SectionErrorBoundary label="Plugin panel (left of Style)">
-          <PluginRightPanel
-            dock="left-of-style"
-            contentEl={pluginContentEl}
-            width={pluginPanelWidth}
-            onWidthChange={setPluginPanelWidth}
-          />
-        </SectionErrorBoundary>
-        {/* The notebook claims the workspace's right half, so the Style panel
-            collapses to its rail while the notebook is open (Processing →
-            Jupyter Notebook) rather than unmounting; the user can re-expand it.
-            A story map presentation collapses it for the same reason. */}
-        {layoutOptions.stylePanelVisible ? (
-          <SectionErrorBoundary label="Style panel">
-            <StylePanel
+        {replaceStylePanelId ? (
+          // Shared-rail mode (issue #765): the plugin panel shares the Style
+          // sidebar surface, so a single rail lists both the workbench and Style
+          // instead of the two positional plugin slots flanking the Style panel.
+          <SectionErrorBoundary label="Shared right sidebar">
+            <SharedRightSidebar
+              pluginId={replaceStylePanelId}
+              pluginContentEl={pluginContentEl}
+              pluginWidth={pluginPanelWidth}
+              onPluginWidthChange={setPluginPanelWidth}
+              stylePanelVisible={layoutOptions.stylePanelVisible}
               mapControllerRef={mapControllerRef}
-              onResizeStart={startStylePanelResize}
-              autoCollapse={
-                notebookOpen ||
-                storymapPresenting ||
-                autoCollapsedPanel === "style"
-              }
+              onStyleResizeStart={startStylePanelResize}
             />
           </SectionErrorBoundary>
-        ) : null}
-        <SectionErrorBoundary label="Plugin panel (right of Style)">
-          <PluginRightPanel
-            dock="right-of-style"
-            contentEl={pluginContentEl}
-            width={pluginPanelWidth}
-            onWidthChange={setPluginPanelWidth}
-          />
-        </SectionErrorBoundary>
+        ) : (
+          <>
+            <SectionErrorBoundary label="Plugin panel (left of Style)">
+              <PluginRightPanel
+                dock="left-of-style"
+                contentEl={pluginContentEl}
+                width={pluginPanelWidth}
+                onWidthChange={setPluginPanelWidth}
+              />
+            </SectionErrorBoundary>
+            {/* The notebook claims the workspace's right half, so the Style panel
+                collapses to its rail while the notebook is open (Processing →
+                Jupyter Notebook) rather than unmounting; the user can re-expand it.
+                A story map presentation collapses it for the same reason. */}
+            {layoutOptions.stylePanelVisible ? (
+              <SectionErrorBoundary label="Style panel">
+                <StylePanel
+                  mapControllerRef={mapControllerRef}
+                  onResizeStart={startStylePanelResize}
+                  autoCollapse={
+                    notebookOpen ||
+                    storymapPresenting ||
+                    autoCollapsedPanel === "style"
+                  }
+                />
+              </SectionErrorBoundary>
+            ) : null}
+            <SectionErrorBoundary label="Plugin panel (right of Style)">
+              <PluginRightPanel
+                dock="right-of-style"
+                contentEl={pluginContentEl}
+                width={pluginPanelWidth}
+                onWidthChange={setPluginPanelWidth}
+              />
+            </SectionErrorBoundary>
+          </>
+        )}
         {notebookOpen ? (
           <SectionErrorBoundary label="Notebook">
             <Suspense fallback={null}>

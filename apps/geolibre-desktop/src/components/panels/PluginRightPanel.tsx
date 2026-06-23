@@ -92,19 +92,30 @@ export function PluginRightPanel({
   // (toward the map). Style-side docks face left (toward the map).
   const isLayersSide =
     dock === "left-of-layers" || dock === "right-of-layers";
+  // The shared right-sidebar mode: the panel shares the Style rail (rendered by
+  // the host's SharedRightSidebar), so it has no move buttons and no rail of its
+  // own; its collapsed entry lives in that single shared rail instead.
+  const isSharedRail = dock === "replace-style";
 
   // Adopt the shared content host (rendered once by the shell) into this slot
   // while it owns the panel. appendChild moves the element, so stepping the
   // panel between docks relocates the same DOM and preserves the plugin's state
-  // rather than re-rendering it.
+  // rather than re-rendering it. `collapsed` is a dependency because the
+  // shared-rail mode unmounts the content wrapper while collapsed (it renders
+  // nothing), so the host must be re-adopted into the fresh wrapper when the
+  // panel expands again; for the positional docks the wrapper merely hides, so
+  // re-adopting the already-attached host is a harmless no-op.
   useEffect(() => {
     if (!matched) return;
     const wrapper = contentRef.current;
     if (!wrapper) return;
     wrapper.appendChild(contentEl);
-  }, [matched, contentEl]);
+  }, [matched, contentEl, collapsed]);
 
   if (!matched || !panel) return null;
+  // When collapsed in shared-rail mode the host's single shared rail shows this
+  // panel's entry, so render nothing here (no second rail beside Style).
+  if (isSharedRail && collapsed) return null;
 
   const handleResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -198,28 +209,32 @@ export function PluginRightPanel({
         <div className="flex items-center justify-between border-b px-3 py-1.5">
           <span className="truncate text-sm font-semibold">{panel.title}</span>
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              title={t("pluginPanel.moveLeft")}
-              aria-label={t("pluginPanel.moveLeft")}
-              disabled={!canMoveLeft}
-              onClick={() => moveActiveRightPanelDock("left")}
-            >
-              <ArrowLeftToLine className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              title={t("pluginPanel.moveRight")}
-              aria-label={t("pluginPanel.moveRight")}
-              disabled={!canMoveRight}
-              onClick={() => moveActiveRightPanelDock("right")}
-            >
-              <ArrowRightToLine className="h-4 w-4" />
-            </Button>
+            {!isSharedRail ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title={t("pluginPanel.moveLeft")}
+                  aria-label={t("pluginPanel.moveLeft")}
+                  disabled={!canMoveLeft}
+                  onClick={() => moveActiveRightPanelDock("left")}
+                >
+                  <ArrowLeftToLine className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title={t("pluginPanel.moveRight")}
+                  aria-label={t("pluginPanel.moveRight")}
+                  disabled={!canMoveRight}
+                  onClick={() => moveActiveRightPanelDock("right")}
+                >
+                  <ArrowRightToLine className="h-4 w-4" />
+                </Button>
+              </>
+            ) : null}
             <Button
               variant="ghost"
               size="icon"

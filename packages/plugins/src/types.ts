@@ -362,17 +362,27 @@ export interface GeoLibreFloatingPanelRegistration {
 }
 
 /**
- * Where a plugin panel docks, left to right: `left-of-layers` (the far-left
- * edge), `right-of-layers` (between the Layers panel and the map), `left-of-style`
- * (between the map and the Style panel), or `right-of-style` (the far-right
- * edge). The built-in panel on the docked side (Layers on the left, Style on the
- * right) collapses to its rail while the plugin panel is expanded next to it.
+ * Where a plugin panel docks. Four are positional, left to right: `left-of-layers`
+ * (the far-left edge), `right-of-layers` (between the Layers panel and the map),
+ * `left-of-style` (between the map and the Style panel), or `right-of-style` (the
+ * far-right edge). The built-in panel on the docked side (Layers on the left,
+ * Style on the right) collapses to its rail while the plugin panel is expanded
+ * next to it.
+ *
+ * `replace-style` is a non-positional **shared-rail** mode: the panel shares the
+ * Style panel's right-sidebar surface instead of sitting beside it as a separate
+ * rail. The host shows a single far-right rail listing both the plugin panel and
+ * Style; selecting one expands it while the other stays as a rail entry, so a
+ * workbench-style plugin feels like a first-class right-sidebar workspace rather
+ * than a second rail next to Style. Unlike the positional docks, this mode is not
+ * steppable with the move buttons.
  */
 export type GeoLibreRightPanelDock =
   | "left-of-layers"
   | "right-of-layers"
   | "left-of-style"
-  | "right-of-style";
+  | "right-of-style"
+  | "replace-style";
 
 /**
  * A plugin-owned dockable side panel. The host renders the registered panel in
@@ -389,12 +399,15 @@ export interface GeoLibreRightPanelRegistration {
   /** Human-readable title shown in the panel header and collapsed rail. */
   title: string;
   /**
-   * Where the panel docks initially: `left-of-layers`, `right-of-layers`,
-   * `left-of-style`, or `right-of-style` (the default). The built-in panel on
-   * the docked side (Layers on the left, Style on the right) collapses to its
-   * rail while the plugin panel is expanded next to it. The user can move the
-   * panel between positions at runtime with the move buttons in its header (or
-   * a plugin via {@link GeoLibreAppAPI.setActiveRightPanelDock}).
+   * Where the panel docks initially: one of the four positional docks
+   * (`left-of-layers`, `right-of-layers`, `left-of-style`, or `right-of-style`,
+   * the default), or `replace-style` for the shared right-sidebar mode. With a
+   * positional dock the built-in panel on the docked side (Layers on the left,
+   * Style on the right) collapses to its rail while the plugin panel is expanded
+   * next to it, and the user can move the panel between positions at runtime with
+   * the move buttons in its header (or a plugin via
+   * {@link GeoLibreAppAPI.setActiveRightPanelDock}). With `replace-style` the
+   * panel shares the Style sidebar's single rail instead and is not steppable.
    */
   dock?: GeoLibreRightPanelDock;
   /**

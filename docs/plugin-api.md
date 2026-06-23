@@ -130,7 +130,8 @@ export type GeoLibreRightPanelDock =
   | "left-of-layers" // left of the Layers panel
   | "right-of-layers" // between the Layers panel and the map
   | "left-of-style" // between the map and the Style panel
-  | "right-of-style"; // right of the Style panel (default)
+  | "right-of-style" // right of the Style panel (default)
+  | "replace-style"; // share the Style sidebar's single rail (shared-rail mode)
 
 export interface GeoLibreRightPanelRegistration {
   id: string;
@@ -287,6 +288,7 @@ Notes:
 - `openRightPanel(id)` makes the panel active and expanded (it also expands a collapsed panel); `collapseRightPanel(id)` collapses it to its rail without closing; `closeRightPanel(id)` releases the workspace; `getActiveRightPanel()` returns the active id or `null`.
 - The panel is a flex sibling of the map, so opening it shrinks the map view (the map keeps filling the remaining space); no manual map padding is required.
 - **Dock position:** a panel docks at one of four positions (left to right): `left-of-layers`, `right-of-layers` (between Layers and the map), `left-of-style` (between the map and Style), or `right-of-style` (the default). Set `dock` on the registration to choose the initial position. The user steps the panel between positions at runtime with the two move buttons in the panel header (disabled at the ends), and a plugin can set it directly with `app.setActiveRightPanelDock?.(...)`. The position resets to the panel's declared `dock` when it closes or another panel opens.
+- **Shared-rail mode (`replace-style`):** a fifth, non-positional dock for workbench-style plugins that want to feel like a first-class right-sidebar workspace rather than a second rail beside Style. Register with `dock: "replace-style"` and the host shows a single far-right rail listing both your panel and Style; selecting one expands it to the left of the rail while the other stays as a rail entry. The two are mutually exclusive, so the user never sees two adjacent rails. Style starts collapsed so the workbench reads as the active workspace, and the user can expand it (which collapses the workbench) at any time. This mode is not steppable, so the header omits the move buttons and `setActiveRightPanelDock` ignores `replace-style`; everything else (chrome, resize, collapse, close, lifecycle hooks) is unchanged.
 - These methods are typed optional for forward-compatibility with host variants that have no right sidebar, so call them with optional chaining (`app.registerRightPanel?.(...)`).
 
 ## Toolbar menus

@@ -154,6 +154,37 @@ describe("right-panel registry", () => {
     assert.equal(getActiveRightPanelDock(), null);
   });
 
+  it("honors the non-positional replace-style dock and keeps it unsteppable", () => {
+    registerRightPanel(testPanel({ dock: "replace-style" }));
+    openRightPanel("workbench");
+    // A declared replace-style dock survives normalization.
+    assert.equal(getActiveRightPanelDock(), "replace-style");
+    assert.equal(getRightPanelSnapshot().dock, "replace-style");
+
+    // It is not part of the steppable position order, so moving is a no-op.
+    moveActiveRightPanelDock("left");
+    assert.equal(getActiveRightPanelDock(), "replace-style");
+    moveActiveRightPanelDock("right");
+    assert.equal(getActiveRightPanelDock(), "replace-style");
+
+    // setActiveRightPanelDock only accepts the four positional docks; switching
+    // to a position works, but switching to replace-style is rejected.
+    setActiveRightPanelDock("left-of-style");
+    assert.equal(getActiveRightPanelDock(), "left-of-style");
+    setActiveRightPanelDock("replace-style");
+    assert.equal(getActiveRightPanelDock(), "left-of-style");
+  });
+
+  it("falls back to right-of-style for an unknown declared dock", () => {
+    registerRightPanel(
+      testPanel({
+        dock: "nonsense" as unknown as GeoLibreRightPanelRegistration["dock"],
+      }),
+    );
+    openRightPanel("workbench");
+    assert.equal(getActiveRightPanelDock(), "right-of-style");
+  });
+
   it("ignores dock changes when no panel is active", () => {
     setActiveRightPanelDock("left-of-layers");
     moveActiveRightPanelDock("left");

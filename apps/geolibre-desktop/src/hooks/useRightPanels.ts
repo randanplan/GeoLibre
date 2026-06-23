@@ -31,6 +31,10 @@ const selectAutoCollapsed = (): AutoCollapsedPanel => {
   // Only an expanded panel collapses its neighbor; a panel collapsed to its own
   // rail leaves room, so the built-in panel can restore.
   if (snapshot.dock === null || snapshot.collapsed) return null;
+  // The shared-rail mode (`replace-style`) does not push a neighbor aside: it
+  // shares the Style sidebar surface, and SharedRightSidebar coordinates Style's
+  // collapse itself.
+  if (snapshot.dock === "replace-style") return null;
   return snapshot.dock === "left-of-layers" ||
     snapshot.dock === "right-of-layers"
     ? "layers"
@@ -52,5 +56,28 @@ export function useAutoCollapsedPanel(): AutoCollapsedPanel {
     subscribeRightPanels,
     selectAutoCollapsed,
     selectAutoCollapsed,
+  );
+}
+
+const selectReplaceStylePanelId = (): string | null => {
+  const snapshot = getRightPanelSnapshot();
+  return snapshot.dock === "replace-style" ? snapshot.activeId : null;
+};
+
+/**
+ * Subscribe to the id of the active plugin panel docked in the shared-rail
+ * (`replace-style`) mode, or null when no such panel is active.
+ *
+ * When non-null, the shell renders the {@link SharedRightSidebar} in place of
+ * the Style-slot panels so the plugin shares the Style rail instead of docking
+ * beside it.
+ *
+ * @returns The active replace-style panel id, or null.
+ */
+export function useReplaceStylePanelId(): string | null {
+  return useSyncExternalStore(
+    subscribeRightPanels,
+    selectReplaceStylePanelId,
+    selectReplaceStylePanelId,
   );
 }

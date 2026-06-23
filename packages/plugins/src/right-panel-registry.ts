@@ -17,7 +17,10 @@ import type {
  * Only one plugin panel is active at a time. It docks at one of four positions
  * and the user can step it between them. The built-in panel on the side the
  * panel is docked (Layers on the left, Style on the right) collapses to its
- * rail while the panel is expanded there; the shell handles that.
+ * rail while the panel is expanded there; the shell handles that. A fifth dock,
+ * `replace-style`, is a non-positional shared-rail mode in which the panel
+ * shares the Style sidebar's single rail rather than sitting beside it; it is
+ * not part of the steppable position order.
  */
 
 /**
@@ -27,8 +30,10 @@ import type {
 export type RightPanelDock = GeoLibreRightPanelDock;
 
 /**
- * Dock positions in left-to-right order, used to step the panel. Frozen so a
- * consumer cannot mutate the validation/order list.
+ * Steppable dock positions in left-to-right order, used to move the panel
+ * between positions. Frozen so a consumer cannot mutate the validation/order
+ * list. The non-positional `replace-style` mode is intentionally excluded: it
+ * shares the Style rail and is not part of the move sequence.
  */
 export const RIGHT_PANEL_DOCKS: readonly RightPanelDock[] = Object.freeze([
   "left-of-layers",
@@ -37,10 +42,20 @@ export const RIGHT_PANEL_DOCKS: readonly RightPanelDock[] = Object.freeze([
   "right-of-style",
 ] as const);
 
+/**
+ * Every accepted dock value, including the non-positional `replace-style` mode.
+ * Used to validate a panel's declared dock; `replace-style` is valid to register
+ * with but is not steppable (it is absent from {@link RIGHT_PANEL_DOCKS}).
+ */
+const ALL_DOCKS: readonly RightPanelDock[] = Object.freeze([
+  ...RIGHT_PANEL_DOCKS,
+  "replace-style",
+] as const);
+
 const DEFAULT_DOCK: RightPanelDock = "right-of-style";
 
 function normalizeDock(dock: unknown): RightPanelDock {
-  return RIGHT_PANEL_DOCKS.includes(dock as RightPanelDock)
+  return ALL_DOCKS.includes(dock as RightPanelDock)
     ? (dock as RightPanelDock)
     : DEFAULT_DOCK;
 }
@@ -232,6 +247,9 @@ export function setActiveRightPanelDock(dock: RightPanelDock): void {
 export function moveActiveRightPanelDock(direction: "left" | "right"): void {
   if (activeId === null || activeDock === null) return;
   const index = RIGHT_PANEL_DOCKS.indexOf(activeDock);
+  // The non-positional `replace-style` mode is not in the step order, so it
+  // cannot be moved between positions.
+  if (index === -1) return;
   const nextIndex = direction === "left" ? index - 1 : index + 1;
   if (nextIndex < 0 || nextIndex >= RIGHT_PANEL_DOCKS.length) return;
   activeDock = RIGHT_PANEL_DOCKS[nextIndex];

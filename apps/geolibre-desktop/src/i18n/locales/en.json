@@ -1699,6 +1699,12 @@
     "moveRight": "Move panel to the right",
     "collapsedLabel": "{{title}} (collapsed)"
   },
+  "sharedRail": {
+    "label": "Right sidebar",
+    "style": "Style",
+    "expand": "Expand {{title}}",
+    "collapse": "Collapse {{title}}"
+  },
   "style": {
     "labels": {
       "heading": "Labels",
