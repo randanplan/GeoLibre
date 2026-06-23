@@ -30,7 +30,7 @@ interface OpenEODialogProps {
 
 interface OpenEOConnection {
   authenticateBasic(username: string, password: string): Promise<void>;
-  buildProcess(id: string): Promise<OpenEOBuilder>;
+  buildProcess(id?: string): Promise<OpenEOBuilder>;
   capabilities(): OpenEOCapabilities;
   createJob(
     process: unknown,
@@ -372,7 +372,9 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
     }
 
     const bbox = buildBoundingBox({ west, south, east, north }, t);
-    const builder = await connection.buildProcess("geolibre-openeo-job");
+    // No id argument: the builder's `id` is inert metadata (never serialized
+    // into the process graph), so an anonymous builder is what we want here.
+    const builder = await connection.buildProcess();
     let datacube = builder.load_collection(
       selectedCollection.trim(),
       bbox,
@@ -517,17 +519,21 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
                     />
                   </div>
 
-                  <label className="flex items-center gap-2 text-sm">
+                  <div className="flex items-center gap-2 text-sm">
                     <input
+                      id="openeo-auth"
                       checked={authEnabled}
                       className="h-4 w-4"
                       type="checkbox"
                       onChange={(event) => setAuthEnabled(event.target.checked)}
                     />
-                    <Label className="cursor-pointer font-normal">
+                    <Label
+                      htmlFor="openeo-auth"
+                      className="cursor-pointer font-normal"
+                    >
                       {t("openeo.basicAuth")}
                     </Label>
-                  </label>
+                  </div>
 
                   {authEnabled ? (
                     <div className="grid grid-cols-1 gap-3">
@@ -857,8 +863,9 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
                   </div>
                 </div>
 
-                <label className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2 text-sm">
                   <input
+                    id="openeo-start-immediately"
                     checked={startImmediately}
                     className="h-4 w-4"
                     type="checkbox"
@@ -866,10 +873,13 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
                       setStartImmediately(event.target.checked)
                     }
                   />
-                  <Label className="cursor-pointer font-normal">
+                  <Label
+                    htmlFor="openeo-start-immediately"
+                    className="cursor-pointer font-normal"
+                  >
                     {t("openeo.startImmediately")}
                   </Label>
-                </label>
+                </div>
 
                 <div className="flex flex-wrap gap-2">
                   <Button
