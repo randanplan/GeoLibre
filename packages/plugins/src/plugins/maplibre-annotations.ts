@@ -107,11 +107,19 @@ export const maplibreAnnotationsPlugin: GeoLibrePlugin = {
     app: GeoLibreAppAPI,
     position: GeoLibreMapControlPosition,
   ) => {
+    if (!toolbarControl) {
+      annotationsPosition = position;
+      return;
+    }
+    const previousPosition = annotationsPosition;
     annotationsPosition = position;
-    if (!toolbarControl) return;
     app.removeMapControl(toolbarControl);
-    const added = app.addMapControl(toolbarControl, annotationsPosition);
-    if (!added) return false;
+    if (app.addMapControl(toolbarControl, position)) return;
+    // Re-adding at the new corner failed; restore the previous position so the
+    // toolbar does not vanish and the stored position stays consistent.
+    annotationsPosition = previousPosition;
+    app.addMapControl(toolbarControl, previousPosition);
+    return false;
   },
 };
 
@@ -259,6 +267,9 @@ class AnnotationToolbarControl implements maplibregl.IControl {
 function setActiveTool(tool: AnnotationTool | null): void {
   if (activeTool === tool) return;
   resetDrawState();
+  // Drop any in-progress preview (e.g. an arrow whose start point was placed)
+  // so it does not hang on the map after switching tools.
+  if (boundMap) clearPreview(boundMap);
   activeTool = tool;
   toolbarControl?.syncActiveTool();
 
@@ -518,7 +529,7 @@ function lineFeature(coordinates: Position[]): Feature {
 function polygonFeature(ring: Position[]): Feature {
   return {
     type: "Feature",
-    geometry: { type: "Polygon", coordinates: [ring] },
+    geometry: { type: "Polygon", coordinates: [ensureCcwRing(ring)] },
     properties: { __annotation: "highlight", ...fillProps() },
   };
 }
@@ -567,7 +578,10 @@ function buildArrow(
   const right = toPos(map.unproject([rightPx.x, rightPx.y]));
   const head: Feature = {
     type: "Feature",
-    geometry: { type: "Polygon", coordinates: [[tip, left, right, tip]] },
+    geometry: {
+      type: "Polygon",
+      coordinates: [ensureCcwRing([tip, left, right, tip])],
+    },
     properties: {
       __annotation: "arrowhead",
       annotationId,
@@ -581,11 +595,15 @@ function buildArrow(
   return [shaft, head];
 }
 
+// A per-load random prefix so ids minted this session cannot collide with ids
+// already saved in a reopened project (the counter restarts at 0 each load, so
+// a bare `annotation-N` would clash and make "Delete last" drop a saved arrow).
+const ANNOTATION_ID_PREFIX = Math.random().toString(36).slice(2, 8);
 let annotationCounter = 0;
 /** A session-unique id grouping the parts of one annotation (e.g. arrow + head). */
 function nextAnnotationId(): string {
   annotationCounter += 1;
-  return `annotation-${annotationCounter}`;
+  return `annotation-${ANNOTATION_ID_PREFIX}-${annotationCounter}`;
 }
 
 function rectangleRing(a: maplibregl.LngLat, b: maplibregl.LngLat): Position[] {
@@ -619,7 +637,11 @@ function closeRing(path: Position[]): Position[] {
   return [...path, first];
 }
 
-/** A rectangle/ellipse drag of near-zero size produces an unusable polygon. */
+/**
+ * A drag that is flat in either dimension produces an invisible zero-area
+ * polygon (e.g. a purely horizontal rectangle drag), so reject a ring whose
+ * bounding box collapses in width OR height, not only when both collapse.
+ */
 function degenerateRing(ring: Position[]): boolean {
   let minX = Infinity;
   let minY = Infinity;
@@ -631,7 +653,23 @@ function degenerateRing(ring: Position[]): boolean {
     maxX = Math.max(maxX, x);
     maxY = Math.max(maxY, y);
   }
-  return maxX - minX < 1e-9 && maxY - minY < 1e-9;
+  return maxX - minX < 1e-9 || maxY - minY < 1e-9;
+}
+
+/**
+ * Normalize a closed ring to counterclockwise winding (RFC 7946 §3.1.6 for a
+ * polygon exterior ring), so annotations round-trip through strict GeoJSON
+ * validators and winding-sensitive tools (e.g. Turf) regardless of the
+ * direction the user dragged or aimed an arrow.
+ */
+function ensureCcwRing(ring: Position[]): Position[] {
+  let twiceArea = 0;
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[i + 1];
+    twiceArea += x1 * y2 - x2 * y1;
+  }
+  return twiceArea < 0 ? [...ring].reverse() : ring;
 }
 
 // ---------------------------------------------------------------------------
