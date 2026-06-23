@@ -542,6 +542,14 @@ export function ProcessingMenu({
             {earthEnginePanel.visible ? " ✓" : ""}
           </DropdownMenuItem>
         )}
+        {/* openEO sits on its own at the very bottom of the menu, divided from
+            the workspaces/services group above. Only render the divider when
+            something above it is actually present. */}
+        {show("processing.openeo") &&
+          (show("processing.assistant") ||
+            (!mobile && show("processing.whitebox")) ||
+            showGeolibre ||
+            showWorkspacesOrServices) && <DropdownMenuSeparator />}
         {show("processing.openeo") && (
           <DropdownMenuItem onSelect={onOpenOpenEO}>
             {t("toolbar.command.openeo")}
