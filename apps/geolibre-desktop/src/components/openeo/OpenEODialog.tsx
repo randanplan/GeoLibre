@@ -161,6 +161,8 @@ function buildBoundingBox(
     north: parseNumber(values.north, t("openeo.north"), t),
   };
 
+  // Antimeridian-crossing extents (west > east) are out of scope for this
+  // initial version; the openEO sample graph uses a simple west < east bbox.
   if (bbox.west >= bbox.east) {
     throw new Error(t("openeo.errors.westLessThanEast"));
   }
@@ -264,6 +266,10 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
     // the next backend's (freshly empty) lists and looks like a silent failure.
     setCollectionQuery("");
     setProcessQuery("");
+    // Drop the previous connection's banners so a stale "Connected…" / error
+    // message doesn't linger while the user edits the URL for a new backend.
+    setStatusMessage(null);
+    setErrorMessage(null);
   };
 
   const handleConnect = async (event: FormEvent<HTMLFormElement>) => {
@@ -284,7 +290,8 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
       const isLoopback =
         parsed.hostname === "localhost" ||
         parsed.hostname === "127.0.0.1" ||
-        parsed.hostname === "::1";
+        // URL.hostname keeps the brackets for IPv6 literals, e.g. "[::1]".
+        parsed.hostname === "[::1]";
       if (authEnabled && parsed.protocol === "http:" && !isLoopback) {
         setErrorMessage(t("openeo.errors.httpBasicAuth"));
         return;
@@ -298,10 +305,10 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
       return;
     }
 
+    // Reset first (it clears the old banners), then set the in-progress state.
     setBusyAction("connect");
-    setErrorMessage(null);
-    setStatusMessage(t("openeo.status.connecting"));
     resetConnectionState();
+    setStatusMessage(t("openeo.status.connecting"));
 
     try {
       const nextConnection = (await withTimeout(
@@ -311,9 +318,6 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
       )) as unknown as OpenEOConnection;
       if (authEnabled) {
         await nextConnection.authenticateBasic(username.trim(), password);
-        // Drop the password from state once it has been exchanged for a token;
-        // no need to keep the plaintext credential around for the session.
-        setPassword("");
       }
       const nextCapabilities = nextConnection.capabilities();
       setStatusMessage(
@@ -332,6 +336,12 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
       );
       setConnection(nextConnection);
       setCapabilities(nextCapabilities);
+      if (authEnabled) {
+        // Clear the plaintext password only now that the connection is fully
+        // established; clearing earlier would force a re-type if resource
+        // loading failed after auth succeeded.
+        setPassword("");
+      }
       const nextCollections = collectionResponse.collections ?? [];
       const nextProcesses = processResponse.processes ?? [];
       setCollections(nextCollections);
@@ -376,7 +386,13 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
     const bbox = buildBoundingBox({ west, south, east, north }, t);
     // No id argument: the builder's `id` is inert metadata (never serialized
     // into the process graph), so an anonymous builder is what we want here.
-    const builder = await connection.buildProcess();
+    // buildProcess() fetches the backend's process list, so time it out like the
+    // other network calls rather than letting a hung backend lock the dialog.
+    const builder = await withTimeout(
+      connection.buildProcess(),
+      OPERATION_TIMEOUT_MS,
+      t("openeo.errors.buildProcessTimeout"),
+    );
     let datacube = builder.load_collection(
       selectedCollection.trim(),
       bbox,
@@ -429,13 +445,15 @@ export function OpenEODialog({ open, onOpenChange }: OpenEODialogProps) {
       setErrorMessage(formatError(error, t));
       setStatusMessage(null);
     } finally {
-      setBusyAction(null);
-    }
-    if (created) {
-      // Refresh the job list as a best-effort follow-up so a refresh failure
-      // cannot mask the successful job creation. No argument so refreshJobs
-      // reads the current `connection` from its own closure.
-      void refreshJobs();
+      if (created) {
+        // Hand the busy state straight to the best-effort job refresh (it owns
+        // resetting busyAction) so the buttons never flash enabled in between.
+        // No argument: refreshJobs reads the current `connection` from its
+        // closure, and its own error handling can't mask the creation success.
+        void refreshJobs();
+      } else {
+        setBusyAction(null);
+      }
     }
   };
 

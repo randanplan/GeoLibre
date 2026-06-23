@@ -1940,6 +1940,7 @@
       "enterCredentials": "Enter the basic authentication username and password.",
       "connectTimeout": "Connecting to the openEO backend timed out.",
       "loadResourcesTimeout": "Loading collections and processes timed out.",
+      "buildProcessTimeout": "Building the process graph timed out.",
       "createJobTimeout": "Creating the batch job timed out.",
       "startJobTimeout": "Starting the batch job timed out.",
       "syncTimeout": "The synchronous result request timed out.",
