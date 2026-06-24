@@ -2,10 +2,12 @@ import { useAppStore } from "@geolibre/core";
 import type { MapController } from "@geolibre/map";
 import { Button, Textarea } from "@geolibre/ui";
 import {
+  ChevronDown,
+  ChevronUp,
   Eraser,
   Loader2,
-  PanelLeft,
-  PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
   Play,
   Terminal,
   X,
@@ -33,9 +35,11 @@ import { PythonEditorPane } from "./PythonEditorPane";
 const DEFAULT_CONSOLE_HEIGHT = 240;
 const MIN_CONSOLE_HEIGHT = 120;
 const MAX_CONSOLE_HEIGHT = 560;
-const DEFAULT_EDITOR_WIDTH = 360;
-const MIN_EDITOR_WIDTH = 220;
-const MAX_EDITOR_WIDTH = 900;
+// Share of the panel width given to the editor (the right pane), as a fraction.
+// Default 0.5 = an even split with the console.
+const DEFAULT_EDITOR_FRACTION = 0.5;
+const MIN_EDITOR_FRACTION = 0.2;
+const MAX_EDITOR_FRACTION = 0.8;
 const PANEL_RESIZE_START_EVENT = "geolibre:panel-resize-start";
 const PANEL_RESIZE_END_EVENT = "geolibre:panel-resize-end";
 
@@ -68,6 +72,9 @@ export function PythonConsolePanel({
   const outputRef = useRef<HTMLDivElement>(null);
   const consoleInputRef = useRef<HTMLTextAreaElement>(null);
   const editorPaneRef = useRef<HTMLDivElement>(null);
+  // The horizontal flex container holding the console (left) and editor (right);
+  // its width drives the drag-to-resize fraction.
+  const splitContainerRef = useRef<HTMLDivElement>(null);
   // Tear down an in-flight drag's window listeners; set while dragging so an
   // unmount mid-drag (e.g. closing the panel) doesn't leak them. One per drag
   // axis so a second drag can't overwrite the other's cleanup.
@@ -81,8 +88,9 @@ export function PythonConsolePanel({
   const historyIndexRef = useRef<number | null>(null);
   const historyDraftRef = useRef("");
   const [height, setHeight] = useState(DEFAULT_CONSOLE_HEIGHT);
+  const [collapsed, setCollapsed] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
-  const [editorWidth, setEditorWidth] = useState(DEFAULT_EDITOR_WIDTH);
+  const [editorFraction, setEditorFraction] = useState(DEFAULT_EDITOR_FRACTION);
   const [code, setCode] = useState("");
   const [history, setHistory] = useState<Entry[]>([]);
   const [running, setRunning] = useState(false);
@@ -131,11 +139,14 @@ export function PythonConsolePanel({
     };
   }, [deps, t]);
 
-  // Keep the latest output in view.
+  // Keep the latest output in view. Skip while collapsed: the output lives in a
+  // `display: none` subtree where `scrollHeight` reads 0, which would otherwise
+  // reset the scroll to the top. Re-running on uncollapse scrolls to the bottom.
   useEffect(() => {
+    if (collapsed) return;
     const el = outputRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [history]);
+  }, [history, collapsed]);
 
   // Apply a queued caret position after a history recall changes `code`.
   useEffect(() => {
@@ -305,13 +316,19 @@ export function PythonConsolePanel({
     };
   };
 
-  // Horizontal splitter between the editor (left) and the console (right).
+  // Horizontal splitter between the console (left) and the editor (right). The
+  // editor's width is tracked as a fraction of the panel so the split stays
+  // proportional as the window resizes.
   const startEditorResize = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    const startX = event.clientX;
-    const startWidth = editorWidth;
-    let nextWidth = startWidth;
+    const container = splitContainerRef.current;
+    if (!container) return;
+    // The container does not resize during a horizontal drag, so capture its
+    // geometry once instead of forcing a layout read on every mousemove.
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0) return;
+    let nextFraction = editorFraction;
     let frame: number | null = null;
     const prevCursor = document.body.style.cursor;
     const prevSelect = document.body.style.userSelect;
@@ -319,16 +336,19 @@ export function PythonConsolePanel({
     document.body.style.userSelect = "none";
 
     const onMove = (moveEvent: MouseEvent) => {
-      nextWidth = Math.min(
-        MAX_EDITOR_WIDTH,
-        Math.max(MIN_EDITOR_WIDTH, startWidth + moveEvent.clientX - startX),
+      // Editor is the right pane: its width is the gap between the cursor and
+      // the container's right edge.
+      const raw = (rect.right - moveEvent.clientX) / rect.width;
+      nextFraction = Math.min(
+        MAX_EDITOR_FRACTION,
+        Math.max(MIN_EDITOR_FRACTION, raw),
       );
       // Throttle to one DOM write per frame; commit to state only on mouseup.
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
         frame = null;
         if (editorPaneRef.current) {
-          editorPaneRef.current.style.width = `${nextWidth}px`;
+          editorPaneRef.current.style.flexBasis = `${nextFraction * 100}%`;
         }
       });
     };
@@ -337,7 +357,7 @@ export function PythonConsolePanel({
       window.removeEventListener("mouseup", onUp);
       horizontalResizeCleanupRef.current = null;
       if (frame !== null) window.cancelAnimationFrame(frame);
-      setEditorWidth(nextWidth);
+      setEditorFraction(nextFraction);
       document.body.style.cursor = prevCursor;
       document.body.style.userSelect = prevSelect;
     };
@@ -366,15 +386,18 @@ export function PythonConsolePanel({
       ref={sectionRef}
       aria-label={t("pythonConsole.title")}
       className="relative flex shrink-0 flex-col border-t bg-card"
-      style={{ height }}
+      // Collapsed: drop the fixed height so the panel hugs its header.
+      style={collapsed ? undefined : { height }}
     >
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label={t("pythonConsole.resize")}
-        className="absolute -top-1 left-0 right-0 z-20 h-2 cursor-row-resize select-none border-t border-transparent hover:border-primary"
-        onMouseDown={startResize}
-      />
+      {collapsed ? null : (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={t("pythonConsole.resize")}
+          className="absolute -top-1 left-0 right-0 z-20 h-2 cursor-row-resize select-none border-t border-transparent hover:border-primary"
+          onMouseDown={startResize}
+        />
+      )}
       <div className="flex items-center gap-2 border-b px-3 py-1.5">
         <Terminal className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-semibold">{t("pythonConsole.title")}</span>
@@ -400,9 +423,9 @@ export function PythonConsolePanel({
             onClick={() => setEditorVisible((v) => !v)}
           >
             {editorVisible ? (
-              <PanelLeftClose className="h-4 w-4" />
+              <PanelRightClose className="h-4 w-4" />
             ) : (
-              <PanelLeft className="h-4 w-4" />
+              <PanelRight className="h-4 w-4" />
             )}
           </Button>
           <Button
@@ -418,6 +441,25 @@ export function PythonConsolePanel({
             variant="ghost"
             size="icon"
             className="h-8 w-8"
+            title={
+              collapsed
+                ? t("pythonConsole.expand")
+                : t("pythonConsole.collapse")
+            }
+            aria-expanded={!collapsed}
+            aria-controls="python-console-body"
+            onClick={() => setCollapsed((v) => !v)}
+          >
+            {collapsed ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
             title={t("pythonConsole.close")}
             onClick={() => setPythonConsoleOpen(false)}
           >
@@ -426,32 +468,13 @@ export function PythonConsolePanel({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        {editorVisible ? (
-          <>
-            <div
-              ref={editorPaneRef}
-              className="flex min-w-0 flex-col border-r"
-              style={{ width: editorWidth }}
-            >
-              <PythonEditorPane
-                deps={deps}
-                ready={ready}
-                running={running}
-                runScript={runScript}
-                completionLabel={t("pythonConsole.completions")}
-              />
-            </div>
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label={t("pythonConsole.resizeEditor")}
-              className="w-1 shrink-0 cursor-col-resize select-none bg-border hover:bg-primary"
-              onMouseDown={startEditorResize}
-            />
-          </>
-        ) : null}
-
+      <div
+        id="python-console-body"
+        ref={splitContainerRef}
+        // `hidden` (not unmount) keeps the runtime, scrollback, and editor
+        // buffer intact while the panel is collapsed to its header.
+        className={`flex min-h-0 flex-1 ${collapsed ? "hidden" : ""}`}
+      >
         <div className="flex min-w-0 flex-1 flex-col">
           <div
             ref={outputRef}
@@ -506,6 +529,31 @@ export function PythonConsolePanel({
             </Button>
           </div>
         </div>
+
+        {editorVisible ? (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t("pythonConsole.resizeEditor")}
+              className="w-1 shrink-0 cursor-col-resize select-none bg-border hover:bg-primary"
+              onMouseDown={startEditorResize}
+            />
+            <div
+              ref={editorPaneRef}
+              className="flex shrink-0 grow-0 flex-col border-l"
+              style={{ flexBasis: `${editorFraction * 100}%` }}
+            >
+              <PythonEditorPane
+                deps={deps}
+                ready={ready}
+                running={running}
+                runScript={runScript}
+                completionLabel={t("pythonConsole.completions")}
+              />
+            </div>
+          </>
+        ) : null}
       </div>
     </section>
   );
