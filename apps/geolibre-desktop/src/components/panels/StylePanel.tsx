@@ -906,13 +906,79 @@ function RasterStyleSlider({
   onChange,
   format = (next) => next.toFixed(2),
 }: RasterStyleSliderProps) {
+  // Double-clicking the value label (or the slider track) swaps the read-only
+  // value for an inline numeric input, so users can type an exact value instead
+  // of dragging to it (#832). Enter/blur commits the clamped value, Escape cancels.
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const precision = stepPrecision(step);
+  // Guard so each edit session commits (or cancels) at most once: Enter and
+  // Escape both tear down the input, and React still fires onBlur on the
+  // unmounting element. Without this, blur would re-commit after Enter or
+  // commit a cancelled draft after Escape.
+  const handledRef = useRef(false);
+
+  const commit = (raw: string) => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    const parsed = Number(raw);
+    // Treat an empty/whitespace entry like Escape: cancel rather than commit 0
+    // (Number("") === 0 would otherwise silently reset the slider to its min).
+    if (raw.trim() !== "" && Number.isFinite(parsed)) {
+      onChange(Number(clampNumber(parsed, min, max).toFixed(precision)));
+    }
+    setEditing(false);
+  };
+
+  const cancel = () => {
+    handledRef.current = true;
+    setEditing(false);
+  };
+
+  const startEditing = () => {
+    handledRef.current = false;
+    setDraft(String(value));
+    setEditing(true);
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <Label className="text-xs">{label}</Label>
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
-          {format(value)}
-        </span>
+        {editing ? (
+          <Input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            autoFocus
+            aria-label={`${label} value`}
+            className="h-6 w-20 px-1.5 py-0 text-right font-mono text-xs [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => commit(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commit((event.target as HTMLInputElement).value);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancel();
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="shrink-0 cursor-text font-mono text-xs text-muted-foreground hover:text-foreground"
+            title={t("style.raster.exactValueHint")}
+            aria-label={`Edit ${label} value`}
+            onDoubleClick={startEditing}
+          >
+            {format(value)}
+          </button>
+        )}
       </div>
       <Slider
         aria-label={label}
@@ -923,6 +989,7 @@ function RasterStyleSlider({
         onValueChange={([next]: number[]) => {
           if (typeof next === "number") onChange(next);
         }}
+        onDoubleClick={startEditing}
       />
     </div>
   );
@@ -2926,6 +2993,28 @@ export function StylePanel({
                     setLayerStyle(layer.id, { rasterSaturation: value })
                   }
                 />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={
+                    styleValue(style, "rasterSaturation") <= -1
+                      ? "default"
+                      : "outline"
+                  }
+                  className="w-full"
+                  aria-pressed={styleValue(style, "rasterSaturation") <= -1}
+                  title={t("style.raster.greyscaleHint")}
+                  onClick={() =>
+                    setLayerStyle(layer.id, {
+                      rasterSaturation:
+                        styleValue(style, "rasterSaturation") <= -1
+                          ? DEFAULT_LAYER_STYLE.rasterSaturation
+                          : -1,
+                    })
+                  }
+                >
+                  {t("style.raster.greyscale")}
+                </Button>
                 <RasterStyleSlider
                   label="Contrast"
                   value={styleValue(style, "rasterContrast")}
@@ -2952,6 +3041,30 @@ export function StylePanel({
             {layer.metadata.sourceKind === RASTER_SOURCE_KIND && (
               <RasterSymbologySection layer={layer} />
             )}
+            <Separator />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full"
+              title={t("style.raster.resetHint")}
+              onClick={() => {
+                setLayerOpacity(layer.id, 1);
+                if (!isDeckRasterLayer) {
+                  setLayerStyle(layer.id, {
+                    rasterBrightnessMin:
+                      DEFAULT_LAYER_STYLE.rasterBrightnessMin,
+                    rasterBrightnessMax:
+                      DEFAULT_LAYER_STYLE.rasterBrightnessMax,
+                    rasterSaturation: DEFAULT_LAYER_STYLE.rasterSaturation,
+                    rasterContrast: DEFAULT_LAYER_STYLE.rasterContrast,
+                    rasterHueRotate: DEFAULT_LAYER_STYLE.rasterHueRotate,
+                  });
+                }
+              }}
+            >
+              {t("style.raster.reset")}
+            </Button>
           </div>
         </ScrollArea>
         <Separator />
