@@ -15,6 +15,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { CollaborationApi } from "../../hooks/useCollaboration";
+import { CollaborationParticipantRow } from "./CollaborationParticipantRow";
 
 // A small fixed palette so participant colors stay distinct and legible. Each
 // entry pairs a hex value with a human-readable name for the swatch aria-label.
@@ -186,6 +187,7 @@ export function CollaborateDialog({
             onLeave={handleLeave}
             onDismiss={() => onOpenChange(false)}
             onSetMode={api.setMode}
+            onSetParticipantMode={api.setParticipantMode}
             onSetFollowHost={api.setFollowHost}
           />
         ) : (
@@ -371,6 +373,7 @@ function ActiveSession({
   onLeave,
   onDismiss,
   onSetMode,
+  onSetParticipantMode,
   onSetFollowHost,
 }: {
   shareLink: string;
@@ -379,6 +382,7 @@ function ActiveSession({
   onLeave: () => void;
   onDismiss: () => void;
   onSetMode: (mode: CollaborationMode) => void;
+  onSetParticipantMode: (clientId: string, canEdit: boolean) => void;
   onSetFollowHost: (enabled: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -483,23 +487,14 @@ function ActiveSession({
         })}</Label>
         <ul className="space-y-1">
           {collaboration.participants.map((p) => (
-            <li key={p.clientId} className="flex items-center gap-2 text-sm">
-              <span
-                className="h-3 w-3 shrink-0 rounded-full"
-                style={{ backgroundColor: p.color }}
-              />
-              <span className="truncate">{p.displayName}</span>
-              {p.clientId === collaboration.clientId && (
-                <span className="text-xs text-muted-foreground">
-                  ({t("collaborate.you")})
-                </span>
-              )}
-              {p.role === "host" && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {t("collaborate.host")}
-                </span>
-              )}
-            </li>
+            <CollaborationParticipantRow
+              key={p.clientId}
+              participant={p}
+              mode={collaboration.mode}
+              isSelf={p.clientId === collaboration.clientId}
+              canManage={isHost}
+              onSetParticipantMode={onSetParticipantMode}
+            />
           ))}
         </ul>
       </div>

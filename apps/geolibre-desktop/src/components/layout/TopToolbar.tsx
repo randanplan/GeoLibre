@@ -94,8 +94,7 @@ import { AboutDialog } from "./AboutDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { ManagePluginsDialog } from "./ManagePluginsDialog";
 import { ShareProjectDialog } from "./ShareProjectDialog";
-import { CollaborateDialog } from "./CollaborateDialog";
-import { useCollaboration } from "../../hooks/useCollaboration";
+import type { CollaborationApi } from "../../hooks/useCollaboration";
 import { SettingsDialog } from "./SettingsDialog";
 import { SetViewDialog } from "./SetViewDialog";
 import { PrintLayoutDialog } from "./PrintLayoutDialog";
@@ -139,6 +138,9 @@ interface TopToolbarProps {
   showLabels?: boolean;
   showProjectInfo?: boolean;
   themeMode: ThemeMode;
+  // Lifted to DesktopShell so the on-canvas status badge can share one live
+  // session (calling useCollaboration twice would open two sockets).
+  collaboration: CollaborationApi;
   onOpenDiagnostics: () => void;
   onToggleThemeMode: () => void;
 }
@@ -151,6 +153,7 @@ export function TopToolbar({
   showLabels = true,
   showProjectInfo = true,
   themeMode,
+  collaboration,
   onOpenDiagnostics,
   onToggleThemeMode,
 }: TopToolbarProps) {
@@ -229,7 +232,8 @@ export function TopToolbar({
   const setProjectName = useAppStore((s) => s.setProjectName);
   // The Collaborate dialog's visibility lives in the store so the on-canvas
   // session-status badge can reopen it from outside this component tree (#754).
-  const collaborateDialogOpen = useAppStore((s) => s.ui.collaborateDialogOpen);
+  // The dialog itself is rendered by DesktopShell (not here) so it survives
+  // toolbar-hidden layouts; the toolbar only triggers it via this setter.
   const setCollaborateDialogOpen = useAppStore(
     (s) => s.setCollaborateDialogOpen,
   );
@@ -278,22 +282,11 @@ export function TopToolbar({
   const projectFiles = useProjectFileActions(mapControllerRef);
   const osmPbf = useOsmPbfLoader(appApi, projectFiles.setActionError);
   const consent = useConsentGatedActions({ appApi, isActive, toggle });
-  const collaboration = useCollaboration(mapControllerRef);
   const viewportHistory = useViewportHistory(
     mapControllerRef,
     mapReadyGeneration,
     projectGeneration,
   );
-
-  // When opened via a `?collab=<code>` share link, auto-open the Collaborate
-  // dialog (which prefills the code) so the recipient only picks a name and
-  // joins, instead of having to find the Project menu first.
-  useEffect(() => {
-    if (!collaboration.enabled) return;
-    if (new URLSearchParams(window.location.search).get("collab")) {
-      setCollaborateDialogOpen(true);
-    }
-  }, [collaboration.enabled]);
 
   // Tracks an active IME composition so pressing Enter to confirm a CJK
   // candidate doesn't blur the project-name field mid-composition.
@@ -1056,13 +1049,6 @@ export function TopToolbar({
           return { content, filename: `${safeName}.geolibre.json` };
         }}
       />
-      {collaboration.enabled && (
-        <CollaborateDialog
-          open={collaborateDialogOpen}
-          onOpenChange={setCollaborateDialogOpen}
-          api={collaboration}
-        />
-      )}
       {isMenuVisible(uiProfile, "help") && (
         <HelpMenu
           chrome={chrome}

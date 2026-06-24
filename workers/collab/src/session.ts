@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type {
+  CollabChatMessage,
   CollabCursor,
   CollabParticipant,
   CollabView,
@@ -74,6 +75,20 @@ const MAX_SNAPSHOT_BYTES = 1_000_000;
 // abandoned codes don't accumulate. A rejoin before the alarm fires cancels it.
 const EMPTY_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
+// Cap a single chat message so one frame can't store an unbounded string.
+const MAX_CHAT_TEXT_LENGTH = 2000;
+// How many recent chat messages to retain so a late joiner sees recent history.
+// Persisted (not in-memory) so it survives a hibernation between messages.
+const CHAT_HISTORY_LIMIT = 50;
+// Hard byte budget for the persisted chat log, comfortably under Cloudflare's
+// ~128 KiB per-value storage cap (multi-byte text can blow the count limit).
+const MAX_CHAT_STORAGE_BYTES = 100_000;
+// Minimum gap between a socket's chat frames. Each chat costs a storage
+// read+write and a fan-out, so silently drop bursts faster than this floor to
+// keep one client from exhausting the session's storage-op budget. Generous
+// enough that normal typing/sending is never affected.
+const MIN_CHAT_INTERVAL_MS = 250;
+
 // Stateless and reused across frames (snapshots can arrive several times a
 // second), so we don't allocate a new encoder per message.
 const ENCODER = new TextEncoder();
@@ -83,6 +98,35 @@ interface SocketAttachment {
   displayName: string;
   color: string;
   role: CollaborationRole;
+  /**
+   * Host-set per-participant edit override (#754, Part 3). `undefined` means
+   * "follow the session mode"; `true`/`false` pins this socket to can-edit /
+   * view-only. Stored on the attachment so it survives a hibernation wake and is
+   * never persisted to storage (it is keyed to a clientId, which is per-socket).
+   */
+  editOverride?: boolean;
+  /** Epoch-ms of this socket's last accepted chat frame, for rate-limiting. */
+  lastChatTs?: number;
+}
+
+/** Effective edit permission: the host always edits; otherwise a host-set
+ *  override wins, falling back to the session mode. */
+function canEdit(attachment: SocketAttachment, mode: CollaborationMode): boolean {
+  if (attachment.role === "host") return true;
+  if (attachment.editOverride !== undefined) return attachment.editOverride;
+  return mode === "co-edit";
+}
+
+/** Parse the stored chat log defensively; a corrupt value yields an empty log
+ *  rather than throwing (which would lock joiners out of the welcome). */
+function parseStoredChat(raw: string | undefined): CollabChatMessage[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as CollabChatMessage[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 type PresenceState = PresenceEntry;
@@ -211,6 +255,12 @@ export class CollabSession extends DurableObject<Env> {
       case "set-mode":
         await this.handleSetMode(ws, attachment, message.mode);
         break;
+      case "set-participant-mode":
+        this.handleSetParticipantMode(ws, attachment, message);
+        break;
+      case "chat":
+        await this.handleChat(ws, attachment, message);
+        break;
     }
   }
 
@@ -261,11 +311,12 @@ export class CollabSession extends DurableObject<Env> {
     // close handler only deletes the current clientId).
     if (ws.deserializeAttachment()) return;
 
-    const [storedToken, mode, rev, snapshot] = await Promise.all([
+    const [storedToken, mode, rev, snapshot, chat] = await Promise.all([
       this.ctx.storage.get<string>("hostToken"),
       this.ctx.storage.get<CollaborationMode>("mode"),
       this.ctx.storage.get<number>("rev"),
       this.ctx.storage.get<string>("snapshot"),
+      this.ctx.storage.get<string>("chat"),
     ]);
 
     const role: CollaborationRole =
@@ -304,6 +355,8 @@ export class CollabSession extends DurableObject<Env> {
       snapshot: parseStoredSnapshot(snapshot),
       // Bootstrap the joiner with existing participants' live cursors/viewports.
       presence: Object.fromEntries(this.presence),
+      // Bootstrap the joiner with the recent chat history.
+      chat: parseStoredChat(chat),
       rev: rev ?? 0,
     });
 
@@ -320,11 +373,17 @@ export class CollabSession extends DurableObject<Env> {
   ): Promise<void> {
     const mode =
       (await this.ctx.storage.get<CollaborationMode>("mode")) ?? "co-edit";
-    if (attachment.role !== "host" && mode === "view-only") {
+    // A host-set per-participant override takes precedence over the session
+    // default, so a single guest can be pinned to view-only (or granted edit) in
+    // an otherwise co-edit (or view-only) session (#754, Part 3).
+    if (!canEdit(attachment, mode)) {
       this.send(ws, {
         type: "error",
         code: "forbidden",
-        message: "This session is view-only.",
+        message:
+          attachment.editOverride === false
+            ? "The host has set you to view-only."
+            : "This session is view-only.",
       });
       return;
     }
@@ -395,10 +454,139 @@ export class CollabSession extends DurableObject<Env> {
     }
     const next: CollaborationMode = mode === "view-only" ? "view-only" : "co-edit";
     await this.ctx.storage.put("mode", next);
+    // A session-wide mode change is authoritative: clear any per-participant
+    // overrides so the new mode applies to everyone. Without this, a guest the
+    // host previously pinned to can-edit would keep editing through a later
+    // switch to view-only (a "sticky override" footgun), and there is otherwise
+    // no path to reset an override back to "follow the session mode".
+    let clearedAny = false;
+    for (const socket of this.ctx.getWebSockets()) {
+      const a = socket.deserializeAttachment() as SocketAttachment | null;
+      if (a && a.editOverride !== undefined) {
+        a.editOverride = undefined;
+        socket.serializeAttachment(a);
+        clearedAny = true;
+      }
+    }
+    // Broadcast the cleared roster first, then the new mode, so clients have
+    // dropped the stale `editOverride`s by the time they apply the mode change
+    // (the two frames are sent back-to-back with no await between them).
+    if (clearedAny) this.broadcastParticipants();
     this.broadcast({ type: "mode", mode: next });
   }
 
+  private handleSetParticipantMode(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    message: Extract<ClientMessage, { type: "set-participant-mode" }>,
+  ): void {
+    if (attachment.role !== "host") {
+      this.send(ws, {
+        type: "error",
+        code: "forbidden",
+        message: "Only the host can change participant permissions.",
+      });
+      return;
+    }
+    // `message` is untrusted JSON, so guard the lookup key's type (mirrors the
+    // strict-boolean coercion below) before matching it against attachments.
+    if (typeof message.clientId !== "string") return;
+    // Find the addressed participant's socket and pin its override. The host
+    // (and any other host socket) is always an editor, so refuse to override one
+    // — that keeps `editOverride` meaningful only for guests.
+    const target = this.socketByClientId(message.clientId);
+    // Target disconnected between the host's click and this frame: the
+    // disconnect already broadcasts an updated roster, so the host's view (and
+    // the now-absent toggle) reconciles on its own; no error frame needed.
+    if (!target) return;
+    const targetAttachment =
+      target.deserializeAttachment() as SocketAttachment | null;
+    if (!targetAttachment || targetAttachment.role === "host") return;
+    // Coerce to a strict boolean: `message` is untrusted JSON (the static type
+    // is erased at runtime), so a crafted `"canEdit": 1` must not store a
+    // non-boolean on the attachment.
+    targetAttachment.editOverride = message.canEdit === true;
+    target.serializeAttachment(targetAttachment);
+    // Everyone re-derives effective permission from the participants list (the
+    // affected guest learns its own change here too), so a single broadcast
+    // suffices.
+    this.broadcastParticipants();
+  }
+
+  private async handleChat(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    message: Extract<ClientMessage, { type: "chat" }>,
+  ): Promise<void> {
+    // Chat is open to everyone in the session, including view-only guests; only
+    // project edits are gated. Reject an empty or non-string body.
+    const text =
+      typeof message.text === "string"
+        ? message.text.trim().slice(0, MAX_CHAT_TEXT_LENGTH)
+        : "";
+    if (!text) return;
+    // Per-socket rate limit: silently drop a burst that arrives faster than the
+    // floor so one client can't flood the storage-op budget / fan-out. The last
+    // accepted timestamp rides on the attachment, so it survives a hibernation.
+    const now = Date.now();
+    if (
+      attachment.lastChatTs !== undefined &&
+      now - attachment.lastChatTs < MIN_CHAT_INTERVAL_MS
+    ) {
+      return;
+    }
+    attachment.lastChatTs = now;
+    ws.serializeAttachment(attachment);
+    const chatMessage: CollabChatMessage = {
+      id: crypto.randomUUID(),
+      clientId: attachment.clientId,
+      displayName: attachment.displayName,
+      color: attachment.color,
+      text,
+      // Reuse the cursor sanitizer so a crafted coordinate can't reach peers'
+      // map APIs as NaN/strings.
+      coordinate: sanitizeCursor(message.coordinate),
+      ts: now,
+    };
+    // Persist a bounded history so a late joiner (or a post-hibernation welcome)
+    // sees the recent conversation. Read-modify-write is safe: a Durable Object
+    // processes one message at a time and input-gates across the await.
+    const log = parseStoredChat(await this.ctx.storage.get<string>("chat"));
+    log.push(chatMessage);
+    // Bound by count AND serialized bytes: 50 messages can still exceed the
+    // ~128 KiB per-value storage cap when they hold long multi-byte (e.g. CJK)
+    // text, so drop the oldest until the JSON fits a safe budget. Track the byte
+    // length incrementally (encode once, then subtract each evicted entry plus
+    // its comma separator) so the loop stays O(n) rather than re-encoding the
+    // whole array each iteration.
+    let trimmed = log.slice(-CHAT_HISTORY_LIMIT);
+    let byteLen = ENCODER.encode(JSON.stringify(trimmed)).length;
+    while (trimmed.length > 1 && byteLen > MAX_CHAT_STORAGE_BYTES) {
+      byteLen -= ENCODER.encode(JSON.stringify(trimmed[0])).length + 1;
+      trimmed = trimmed.slice(1);
+    }
+    const serialized = JSON.stringify(trimmed);
+    try {
+      await this.ctx.storage.put("chat", serialized);
+    } catch {
+      // Persisting failed (e.g. the single message still exceeds the value cap).
+      // Don't let it propagate and close the socket; the message is still fanned
+      // out below, it just won't join the late-joiner history.
+    }
+    // Broadcast to everyone including the sender so the server's ordering is the
+    // single source of truth (the sender renders from this echo, not optimistically).
+    this.broadcast({ type: "chat", message: chatMessage });
+  }
+
   // -- helpers ----------------------------------------------------------------
+
+  private socketByClientId(clientId: string): WebSocket | null {
+    for (const socket of this.ctx.getWebSockets()) {
+      const a = socket.deserializeAttachment() as SocketAttachment | null;
+      if (a?.clientId === clientId) return socket;
+    }
+    return null;
+  }
 
   private participants(except?: WebSocket): CollabParticipant[] {
     const result: CollabParticipant[] = [];
@@ -411,6 +599,9 @@ export class CollabSession extends DurableObject<Env> {
           displayName: a.displayName,
           color: a.color,
           role: a.role,
+          // Normalize the attachment's `undefined` (follow session mode) to the
+          // wire's `null`; the host is always an editor with no override.
+          editOverride: a.role === "host" ? null : a.editOverride ?? null,
         });
       }
     }
