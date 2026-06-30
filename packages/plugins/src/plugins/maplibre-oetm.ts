@@ -3,7 +3,7 @@
  * ===================
  * GeoLibre-Plugin für das Ökologische Trassenmanagement (ÖTM).
  *
- * IMPLEMENTATION_PLAN-Referenz: Phasen 0.1 + 1.1–1.4
+ * IMPLEMENTATION_PLAN-Referenz: Phasen 0.1 + 1 + 2
  */
 import type {
   GeoLibreAppAPI,
@@ -19,6 +19,14 @@ import type {
 import { loadLot, mastsToGeoJson } from "../oetm-parser";
 import type { Map as MapLibreMap, GeoJSONSource, Popup } from "maplibre-gl";
 import { Popup as MaplibrePopup } from "maplibre-gl";
+import {
+  initMeasuresModule,
+  setMeasuresContext,
+  getMeasures,
+  setMeasures,
+  buildMeasureSection,
+  importMeasuresFromPdf,
+} from "./maplibre-oetm-measures";
 
 export const OETM_PLUGIN_ID = "oetm-workflow";
 const PANEL_ID = "oetm-workbench";
@@ -422,6 +430,8 @@ async function handleLoadLot() {
     }
 
     ensureLotLayers(lot);
+    setMeasuresContext(lot.lotNumber, lot.sheets);
+    initMeasuresModule(appRef!, () => activeLotNumber, () => activeLotNumber && lots[activeLotNumber] ? lots[activeLotNumber].sheets : [], () => { reRenderWorkbench(); });
     reRenderWorkbench();
     console.log(`[ÖTM] Los ${lot.label} geladen: ${lot.sheets.length} Blätter, ${lot.masts.length} Maste`);
   } catch (err) {
@@ -736,14 +746,18 @@ function buildWorkbenchDOM(container: HTMLElement) {
   }
   wrapper.appendChild(mastSection);
 
-  // Maßnahmen
-  const measureSection = document.createElement("div");
-  measureSection.style.marginBottom = "16px";
-  const measureLabel = document.createElement("div");
-  measureLabel.textContent = `Maßnahmen: ${measures.length}`;
-  measureLabel.style.fontWeight = "500";
-  measureSection.appendChild(measureLabel);
-  wrapper.appendChild(measureSection);
+  // Maßnahmen (inkl. Zeichenwerkzeuge)
+  if (activeLotNumber && lots[activeLotNumber]) {
+    buildMeasureSection(wrapper);
+  } else {
+    const measureSection = document.createElement("div");
+    measureSection.style.marginBottom = "16px";
+    const measureLabel = document.createElement("div");
+    measureLabel.textContent = `Maßnahmen: ${measures.length}`;
+    measureLabel.style.fontWeight = "500";
+    measureSection.appendChild(measureLabel);
+    wrapper.appendChild(measureSection);
+  }
 
   container.appendChild(wrapper);
 }
@@ -778,6 +792,27 @@ function buildToolbarMenu(): GeoLibreToolbarMenu {
         onSelect: () => toggleMastFilter(),
       },
       { type: "separator" as const },
+      {
+        id: "import-pdf",
+        label: "Maßnahmen aus PDF importieren",
+        onSelect: () => {
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = ".pdf";
+          input.style.display = "none";
+          document.body.appendChild(input);
+          input.addEventListener("change", async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            document.body.removeChild(input);
+            const imported = await importMeasuresFromPdf(file.name);
+            if (imported > 0) {
+              reRenderWorkbench();
+            }
+          });
+          input.click();
+        },
+      },
       {
         id: "export",
         label: "Export",
