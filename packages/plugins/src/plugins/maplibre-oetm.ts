@@ -376,29 +376,20 @@ async function handleLoadLot() {
   const app = appRef;
   if (!app) return;
 
-  const pickFile = (accept: string): Promise<File | null> => {
-    return new Promise((resolve) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = accept;
-      input.style.display = "none";
-      document.body.appendChild(input);
-      input.addEventListener("change", () => {
-        const file = input.files?.[0] ?? null;
-        document.body.removeChild(input);
-        resolve(file);
-      });
-      input.addEventListener("cancel", () => {
-        document.body.removeChild(input);
-        resolve(null);
-      });
-      input.click();
-    });
-  };
-
   try {
-    const mengengeruestFile = await pickFile(".xlsx,.xls");
-    if (!mengengeruestFile) return;
+    // Ein Schritt: alle Dateien auf einmal auswählen.
+    // Der Benutzer wählt: Mengengerüst.xlsx + Log_*.log + alle ÖTM-*.PDFs
+    const allFiles = await pickFiles(".xlsx,.log,.pdf,.txt");
+    if (!allFiles || allFiles.length === 0) return;
+
+    const fileArray = Array.from(allFiles);
+
+    // Mengengerüst-Excel finden
+    const mengengeruestFile = fileArray.find((f) => /mengengerüst/i.test(f.name));
+    if (!mengengeruestFile) {
+      alert("Keine Mengengerüst-Excel ausgewählt. Bitte wähle die Datei 'Mengengerüst_*.xlsx'.");
+      return;
+    }
     const mengengeruestData = await readFileAsArrayBuffer(mengengeruestFile);
 
     const fileNameMatch = mengengeruestFile.name.match(/Mengengerüst_(\d{4})_(.+)\.xlsx/i);
@@ -409,15 +400,15 @@ async function handleLoadLot() {
       return;
     }
 
-    const logFile = await pickFile(".log,.txt");
+    // Log-Datei finden
+    const logFile = fileArray.find((f) => /log_/i.test(f.name) && /\.log$|\.txt$/i.test(f.name));
     let logText: string | null = null;
     if (logFile) logText = await readFileAsText(logFile);
 
-    const pdfFiles = await pickFiles(".pdf");
-    let pdfFileNames: string[] = [];
-    if (pdfFiles) {
-      pdfFileNames = Array.from(pdfFiles).map((f) => f.name).filter((n) => /^ÖTM-/i.test(n));
-    }
+    // PDFs filtern (nur ÖTM-*)
+    const pdfFileNames = fileArray
+      .filter((f) => /\.pdf$/i.test(f.name) && /^ÖTM-/i.test(f.name))
+      .map((f) => f.name);
 
     const lot = loadLot(lotNumber, lotName, "2026-27", "westnetz", mengengeruestData, logText, pdfFileNames);
     lots[lot.lotNumber] = lot;
@@ -534,7 +525,7 @@ function buildWorkbenchDOM(container: HTMLElement) {
   title.style.fontWeight = "600";
   wrapper.appendChild(title);
 
-  // Los laden Button
+  // Los laden Button + Hinweis
   const loadBtn = document.createElement("button");
   loadBtn.textContent = Object.keys(lots).length === 0 ? "Los laden" : "Weiteres Los laden";
   loadBtn.style.padding = "8px 16px";
@@ -545,9 +536,18 @@ function buildWorkbenchDOM(container: HTMLElement) {
   loadBtn.style.cursor = "pointer";
   loadBtn.style.fontSize = "14px";
   loadBtn.style.width = "100%";
-  loadBtn.style.marginBottom = "16px";
+  loadBtn.style.marginBottom = "4px";
   loadBtn.onclick = () => handleLoadLot();
   wrapper.appendChild(loadBtn);
+
+  if (Object.keys(lots).length === 0) {
+    const hint = document.createElement("div");
+    hint.textContent = "Wähle: Mengengerüst_*.xlsx + Log_*.log + ÖTM-*.PDFs (Mehrfachauswahl)";
+    hint.style.fontSize = "11px";
+    hint.style.color = "var(--color-text-muted, #9ca3af)";
+    hint.style.marginBottom = "16px";
+    wrapper.appendChild(hint);
+  }
 
   // Filter-Sektion
   if (activeLotNumber && lots[activeLotNumber]) {
