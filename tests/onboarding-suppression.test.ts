@@ -52,6 +52,30 @@ describe("shouldSuppressOnboarding", () => {
     assert.equal(shouldSuppressOnboarding(), false);
   });
 
+  it("suppresses the wizard for an embed page", () => {
+    for (const value of ["1", "true"]) {
+      withSearch(`?embed=${encodeURIComponent(value)}`);
+      assert.equal(shouldSuppressOnboarding(), true, `embed=${value}`);
+    }
+  });
+
+  it("keeps the wizard for non-embed, empty, or non-canonical embed values", () => {
+    // Matches embedHost.ts isEmbedded() exactly: only the literal "1"/"true"
+    // count, so an uppercased or padded value does not suppress onboarding (and
+    // would not activate the embed bridge either).
+    for (const search of [
+      "?embed=0",
+      "?embed=false",
+      "?embed=TRUE",
+      "?embed=%201%20",
+      "?embed=",
+      "?embed",
+    ]) {
+      withSearch(search);
+      assert.equal(shouldSuppressOnboarding(), false, search);
+    }
+  });
+
   it("suppresses the wizard for falsy welcome values", () => {
     for (const value of ["0", "false", "off", "no", "FALSE", " off "]) {
       withSearch(`?welcome=${encodeURIComponent(value)}`);
