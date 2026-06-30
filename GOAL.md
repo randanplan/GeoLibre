@@ -133,4 +133,4 @@ Je Los vorhanden:
 ## 8) Änderungsprotokoll
 
 - 2026-06-29: Erstfassung erstellt.
-- 2026-06-30: Status-Check — Phase 0.1 (Plugin-Grundgerüst) abgeschlossen; Phase 0.2/0.3 Client-Parsing abgeschlossen (oetm-parser.ts: Mengengerüst-Excel, Log-Dateien, GeoJSON, Los-Ladefunktion); Phase 0.4 (Sidecar-Router, 10 Endpunkte) abgeschlossen; Git-Sync mit upstream opengeos/GeoLibre:main (7 Commits). Branch umbenannt: `oetm/phase-0-plugin-skeleton` → `oetm/phase-0-infrastructure`. Branch-Namenskonvention in IMPLEMENTATION_PLAN.md dokumentiert. Review-Findings gefixt: Dead Code entfernt, Extractor-Kernlogik ins Package verschoben. Nächste Schritte: Phase 1 — Blattschnitte & Masten auf Karte.
+- 2026-06-30: Phase 1.1–1.4 abgeschlossen — Los-Ladeprozess (`handleLoadLot()`), Blattschnitt-Layer (`createSheetLayer()`), Mast-Layer (`createMastLayer()`), Statusmanagement (Dropdown pro Blatt im Right-Panel). Gesamtfortschritt: Phase 0 ~75%, Phase 1 ~30%.

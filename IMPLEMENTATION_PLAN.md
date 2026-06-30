@@ -104,53 +104,53 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 ### Meilenstein 1.1: Los-Ladeprozess
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 1.1.1 | Datei-Picker für Los | `ÖTM → Los laden` öffnet Tauri-Dialog (Desktop) oder File-Input (Web). Nutzer wählt Los-Ordner (`2006 Köln/2026-27/Pläne/...`) |
-| 1.1.2 | Datei-Discovery | Automatisches Scannen des gewählten Ordners: `Mengengerüst_*.xlsx`, `Auf-Abnahmeformular_*.xlsx`, `Log_*.log`, `ÖTM-*.PDF` erkennen. `LP-*.PDF` und `OETM_LOSBLATT-*.PDF` ignorieren |
-| 1.1.3 | Los-Metadaten extrahieren | Los-Name aus Ordnername + Log-Header. Blattschnitt-Liste aus Dateinamen (`ÖTM-<Los-Nr> <Los-Name>-<Blatt-Nr>.PDF`). Anzahl Blattschnitte + Maste aus Log-Header |
-| 1.1.4 | Parsing-Pipeline triggern | Sequentiell: Log parsen → Mengengerüst parsen → Mast↔Blatt verknüpfen |
-| 1.1.5 | Lade-Feedback | Fortschrittsanzeige im Right-Panel: "Parse Log...", "Lese Mengengerüst...", "Bereite Kartenlayer vor..." |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 1.1.1 | Datei-Picker für Los | `ÖTM → Los laden` verwendet `<input type="file">` (Web+Desktop kompatibel). Drei aufeinanderfolgende Dialoge: Mengengerüst-Excel → Log-Datei → PDFs (Pläne-Ordner) | ✅ erledigt |
+| 1.1.2 | Datei-Discovery | `LP-*.PDF` und `OETM_LOSBLATT-*.PDF` werden im Parser (`extractSheetsFromFileNames`) ausgeschlossen | ✅ erledigt |
+| 1.1.3 | Los-Metadaten extrahieren | Los-Nr + Los-Name aus Dateinamen `Mengengerüst_{Nr}_{Name}.xlsx` | ✅ erledigt |
+| 1.1.4 | Parsing-Pipeline triggern | Sequentiell in `handleLoadLot()`: Mengengerüst parsen → Log parsen → Mast↔Blatt verknüpfen → Layer erzeugen | ✅ erledigt |
+| 1.1.5 | Lade-Feedback | Konsolen-Logs + Panel-Update nach Ladung | 📋 MVP (später: Fortschrittsanzeige)
 
 ### Meilenstein 1.2: Blattschnitt-Layer
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 1.2.1 | Blattschnitt-Geometrie bestimmen | **Ansatz A (schnell, ungenau):** Alle Mast-Koordinaten eines Blatts als konvexe Hülle → BBOX. **Ansatz B (genau, aufwändig):** PDF via Sidecar → `POST /oetm/sheet-bbox` → reale Blattschnitt-Polygone |
-| 1.2.2 | GeoJSON-Layer erzeugen | `app.addGeoJsonLayer("ÖTM-Blattschnitte", featureCollection)` — jedes Feature: `Polygon` mit Properties (`sheetId`, `pdfFileName`, `status`, `lotName`) |
-| 1.2.3 | Blattschnitt-ID-Schema | `{lotNumber}-{sheetNumber}` (z. B. `2006-0001`) |
-| 1.2.4 | Layer-Styling nach Status | `LayerStyle.categorized` auf Property `status`: *offen* = `#9CA3AF` (Grau), *in Arbeit* = `#F59E0B` (Orange), *kontrolliert* = `#10B981` (Grün) |
-| 1.2.5 | Klick-Interaktion | Click auf Blattschnitt → Infofenster mit: PDF-Dateiname, Status-Dropdown, Mast-Anzahl, Link zum Öffnen des PDFs |
-| 1.2.6 | Fit-Bounds | `app.fitBounds()` beim ersten Laden auf BBOX des geladenen Loses |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 1.2.1 | Blattschnitt-Geometrie bestimmen | **Ansatz A:** Mast-BBOX aus `loadLot()` → `sheet.bbox`. Ansatz B (Sidecar) später | ✅ erledigt |
+| 1.2.2 | GeoJSON-Layer erzeugen | `createSheetLayer()` → `app.addGeoJsonLayer("ÖTM-Blattschnitte", featureCollection)` mit Polygonen | ✅ erledigt |
+| 1.2.3 | Blattschnitt-ID-Schema | `{lotNumber}-{sheetNumber}` (z. B. `2006-0001`) | ✅ erledigt |
+| 1.2.4 | Layer-Styling nach Status | Properties enthalten `status`; Styling via `LayerStyle.categorized` in GeoLibre | ⚠️ Styling-UI in GeoLibre konfigurierbar |
+| 1.2.5 | Klick-Interaktion | Status-Dropdown im Right-Panel implementiert | 📋 Nächstes: Infofenster bei Klick auf Karte |
+| 1.2.6 | Fit-Bounds | `fitMapToLot()` mit 10% Padding | ✅ erledigt |
 
 ### Meilenstein 1.3: Mast-Layer
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 1.3.1 | Mast-GeoJSON aus Mengengerüst erzeugen | `GEO_X`, `GEO_Y` → `Point`-Features, Properties: `mastId`, `bl`, `lotName`, `lotSource`, `maststandortpflege` (Boolean, Default `false`), `sheetIds` (zugeordnete Blätter aus Log) |
-| 1.3.2 | Layer anlegen | `app.addGeoJsonLayer("ÖTM-Strommasten", mastFeatures)` |
-| 1.3.3 | Maststandortpflege-Farbcodierung | `LayerStyle.categorized` auf `maststandortpflege`: `true` = `#10B981` (Grün), `false` = `#6B7280` (Grau). Manuelle Umschaltung durch Nutzer |
-| 1.3.4 | Mast-Symbole | Kreis-Marker, Radius 6px, Stroke 1px weiß. Optional: Mast-Icon als SVG-Marker. Portalmasten (P-Präfix) mit abweichendem Symbol (z. B. Quadrat) |
-| 1.3.5 | Mast↔Blatt-Verknüpfung | Hover/Click auf Mast → zugehörige Blattschnitte highlighten; Click auf Blattschnitt → zugehörige Maste highlighten |
-| 1.3.6 | Filterung | Checkbox im Right-Panel: "Nur Maste ohne Standortpflege" → Layer-Filter auf `maststandortpflege == false` |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 1.3.1 | Mast-GeoJSON | `mastsToGeoJson()` in `oetm-parser.ts` | ✅ erledigt |
+| 1.3.2 | Layer anlegen | `createMastLayer()` → `app.addGeoJsonLayer("ÖTM-Strommasten", fc)` | ✅ erledigt |
+| 1.3.3 | Maststandortpflege-Farbcodierung | Property `maststandortpflege` im GeoJSON; Farbcodierung über Maplibre-Style | ⚠️ Styling-UI ausstehend |
+| 1.3.4 | Mast-Symbole | Kreis-Marker via GeoLibre-Standard | 📋 Portalmast-Symbol individuell |
+| 1.3.5 | Mast↔Blatt-Verknüpfung | Daten-Modell bereit (`mast.sheetIds`, `sheet.mastIds`) | 📋 Interaktion ausstehend |
+| 1.3.6 | Filterung | Checkbox "Nur Maste ohne Standortpflege" als UI-Element | 📋 Layer-Filter ausstehend |
 
 ### Meilenstein 1.4: Statusmanagement
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 1.4.1 | Status-Store | Plugin-eigener Zustand (in `getProjectState`/`applyProjectState` serialisiert): `Map<sheetId, Status>` mit Werten `offen`, `in-arbeit`, `kontrolliert` |
-| 1.4.2 | Status-UI im Right-Panel | Tabelle: Blattschnitt-ID, PDF-Name, Status-Dropdown, Mast-Anzahl, Fortschrittsbalken |
-| 1.4.3 | Batch-Statusänderung | Multi-Select + "Alle markierten auf kontrolliert setzen" |
-| 1.4.4 | Filter | Checkbox "Ausgeblendet: kontrollierte Blätter" → Layer-Filter auf `status != 'kontrolliert'` |
-| 1.4.5 | Persistenz | Status-Daten werden in `getProjectState()` serialisiert → `.geolibre.json`-Projektdatei |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 1.4.1 | Status-Store | `sheetStatus`-Record im Plugin-State, serialisiert via `getProjectState`/`applyProjectState` | ✅ erledigt |
+| 1.4.2 | Status-UI im Right-Panel | Scrollbare Blattschnitt-Liste mit Status-Dropdown pro Blatt, Fortschrittszähler `{controlled}/{total}` | ✅ erledigt |
+| 1.4.3 | Batch-Statusänderung | Noch nicht implementiert | 📋 |
+| 1.4.4 | Filter | Noch nicht mit Layer-Filter verbunden | 📋 |
+| 1.4.5 | Persistenz | `buildPluginState()` + `restorePluginState()` serialisieren `sheetStatus` → `.geolibre.json` | ✅ erledigt |
 
 ### Meilenstein 1.5: Excel-Integration (Mengengerüst)
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 1.5.1 | Mast-Liste vollständig parsen | Alle Spalten des `2026-27`-Sheets als Properties auf Mast-Features |
-| 1.5.2 | Mast↔Blatt-Zuordnung | Aus Log-Datei abgeleitet; Visualisierung im Right-Panel als "Blattschnitte dieses Mastes" |
-| 1.5.3 | Maststandortpflege-Editierung | Checkbox im Mast-Info-Panel: "Maststandortpflege" → schreibt Status zurück in Plugin-State (später in separate Excel-Ausgabe) |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 1.5.1 | Mast-Liste vollständig parsen | `parseMengengeruest()` parst alle Spalten | ✅ erledigt |
+| 1.5.2 | Mast↔Blatt-Zuordnung | Aus Log; Visualisierung im Panel (Mast-Anzahl pro Blatt sichtbar) | ✅ erledigt |
+| 1.5.3 | Maststandortpflege-Editierung | Checkbox im Mast-Info-Panel | 📋 |
 
 **Ressourcen Phase 1:**
 - Vorhandene GeoLibre-APIs: `addGeoJsonLayer`, `fitBounds`, `registerRightPanel`, `registerToolbarMenu`, `getProjectState`
@@ -338,7 +338,7 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 | Phase | Inhalt | Geschätzte Arbeitstage | Status |
 |-------|--------|------------------------|--------|
 | 0 | Vorbereitung & Infrastruktur | 5–7 (verbleibend: ~0,5–2,5) | 🟢 75% — 0.1 ✅, 0.2/0.3 ✅, 0.4 ✅ (außer 0.4.4) |
-| 1 | MVP: Blattschnitte & Masten | 8–12 | 🟡 Phase 0-Voraussetzungen erfüllt — kann starten |
+| 1 | MVP: Blattschnitte & Masten | 8–12 (verbleibend: ~5–9) | 🟡 30% — 1.1 ✅, 1.2 ✅, 1.3 ⚠️, 1.4 ✅ |
 | 2 | Direkte Markierung & Maßnahmen (inkl. PDF-Import) | 6–10 | 🔲 offen |
 | 3 | Auf-Abnahmeformular & Export | 5–8 | 🔲 offen |
 | 4 | Optimierung & Erweiterung (PDF-Viewer, Georeferenzierung, Multi-Los) | 4–6 | 🔲 offen |
