@@ -19,35 +19,35 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 ### Meilenstein 0.1: Plugin-Grundgerüst
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 0.1.1 | Plugin-Datei anlegen | `packages/plugins/src/plugins/maplibre-oetm.ts` — `GeoLibrePlugin`-Objekt mit `activate`/`deactivate`/`getProjectState`/`applyProjectState` |
-| 0.1.2 | Plugin registrieren | In `packages/plugins/src/index.ts` exportieren und in `apps/geolibre-desktop/src/hooks/usePlugins.ts` in `manager.registerAll([...])` aufnehmen |
-| 0.1.3 | Plugin-Icon & Name | Plugin-ID: `oetm-workflow`, Name: `ÖTM-Aufnahme`, `activeByDefault: false` |
-| 0.1.4 | Toolbar-Menü registrieren | `registerToolbarMenu` in `activate()` — Menüpunkt `ÖTM` mit Einträgen: *Los laden*, *Statusübersicht*, *Masten einblenden*, *Export* |
-| 0.1.5 | Right-Panel registrieren | `registerRightPanel` mit `dock: "replace-style"` — `ÖTM-Workbench` als primäre Arbeitsfläche |
-| 0.1.6 | i18n-Schlüssel anlegen | `apps/geolibre-desktop/src/i18n/locales/de.json` und `en.json` um `oetm.*`-Namespace erweitern |
-| 0.1.7 | TypeScript-Typen definieren | `packages/plugins/src/oetm-types.ts` — `OetmLot` (`lotNumber`, `lotName`, `season`, `lotSource: 'westnetz' | 'amprion' | 'manual'`), `OetmSheet` (`sheetId`, `pdfFileName`, `lotNumber`, `status`), `OetmMast` (`mastId`, `bl`, `mastNumber`, `lotName`, `lotSource`, `maststandortpflege`, `coordinates: [number, number]`, `sheetIds`), `OetmMeasure` (29 Formular-Spalten + `measureType: 'flaeche' | 'stueck' | 'linie'`, `geometry`), `SheetStatus` (`offen` | `in-arbeit` | `kontrolliert` | `abgenommen`)
+| # | Teilschritt | Details | Status |
+| |-------------|---------|--------|
+| 0.1.1 | Plugin-Datei anlegen | `packages/plugins/src/plugins/maplibre-oetm.ts` — `GeoLibrePlugin`-Objekt mit `activate`/`deactivate`/`getProjectState`/`applyProjectState` | ✅ erledigt |
+| 0.1.2 | Plugin registrieren | In `packages/plugins/src/index.ts` exportieren und in `apps/geolibre-desktop/src/hooks/usePlugins.ts` in `manager.registerAll([...])` aufnehmen | ✅ erledigt |
+| 0.1.3 | Plugin-Icon & Name | Plugin-ID: `oetm-workflow`, Name: `ÖTM-Aufnahme`, `activeByDefault: false` | ✅ erledigt |
+| 0.1.4 | Toolbar-Menü registrieren | `registerToolbarMenu` in `activate()` — Menüpunkt `ÖTM` mit Einträgen: *Los laden*, *Statusübersicht*, *Masten einblenden*, *Export* | ✅ erledigt |
+| 0.1.5 | Right-Panel registrieren | `registerRightPanel` mit `dock: "replace-style"` — `ÖTM-Workbench` als primäre Arbeitsfläche | ✅ erledigt |
+| 0.1.6 | i18n-Schlüssel anlegen | `apps/geolibre-desktop/src/i18n/locales/de.json` und `en.json` um `oetm.*`-Namespace erweitern | ✅ erledigt |
+| 0.1.7 | TypeScript-Typen definieren | `packages/plugins/src/oetm-types.ts` — `OetmLot` (`lotNumber`, `lotName`, `season`, `lotSource: 'westnetz' | 'amprion' | 'manual'`), `OetmSheet` (`sheetId`, `pdfFileName`, `lotNumber`, `status`), `OetmMast` (`mastId`, `bl`, `mastNumber`, `lotName`, `lotSource`, `maststandortpflege`, `coordinates: [number, number]`, `sheetIds`), `OetmMeasure` (29 Formular-Spalten + `measureType: 'flaeche' | 'stueck' | 'linie'`, `geometry`), `SheetStatus` (`offen` | `in-arbeit` | `kontrolliert` | `abgenommen`) | ✅ erledigt |
 
 ### Meilenstein 0.2: Excel-Parsing (Mengengerüst)
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 0.2.1 | Client-seitiger XLSX-Reader | `npm install xlsx` im Plugin-Pfad oder Nutzung von DuckDB-WASM Spatial Extension (`ST_Read` via `importTextFile`-Blob) |
-| 0.2.2 | `Mengengerüst_*.xlsx` Parser | Sheet `2026-27` einlesen → Spalten: `BL`, `LName`, `Mast`, `Länge_m`, `LeitBez_Team`, `Kreis`, `ÖTM_Los`, `GEO_X`, `GEO_Y` (kein Status-Feld vorhanden) |
-| 0.2.3 | Mast-ID Konstruktion | Zusammengesetzter Schlüssel: `BL + Mast` (z. B. `00120030`). BL-Nummern sind immer 4-stellig; Mast-Nummern werden 4-stellig gepadded (z. B. `0004` für Mast 4, `0030` für Mast 30, `P002` für Portalmast P2). P-Präfix kennzeichnet Portalmasten in Umspannwerken (Leitungs-Endpunkte). Suffix-Handling für Varianten (A/B/C, z. B. `011A`) |
-| 0.2.4 | GeoJSON-Erzeugung | Mast-Liste → `FeatureCollection<Point>` mit Properties (`mastId`, `bl`, `lotName`, `maststandortpflege` (Boolean, Default `false`), `kreis`, `leitungName`) |
-| 0.2.5 | Maststandortpflege-Erkennung | Kein Status-Feld im Mengengerüst → `maststandortpflege` wird manuell vom Nutzer gesetzt. Typen für Erweiterbarkeit vorbereiten: `lotSource` (`westnetz` | `amprion` | `manual`), `lotName` frei definierbar. Manuelle Auswahl von BL+Masten + Los-Name für Fremd-Lose ermöglichen |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 0.2.1 | Client-seitiger XLSX-Reader | `npm install xlsx` im Plugin-Pfad oder Nutzung von DuckDB-WASM Spatial Extension (`ST_Read` via `importTextFile`-Blob) | 🔲 offen |
+| 0.2.2 | `Mengengerüst_*.xlsx` Parser | Sheet `2026-27` einlesen → Spalten: `BL`, `LName`, `Mast`, `Länge_m`, `LeitBez_Team`, `Kreis`, `ÖTM_Los`, `GEO_X`, `GEO_Y` (kein Status-Feld vorhanden) | 🔲 offen |
+| 0.2.3 | Mast-ID Konstruktion | Zusammengesetzter Schlüssel: `BL + Mast` (z. B. `00120030`). BL-Nummern sind immer 4-stellig; Mast-Nummern werden 4-stellig gepadded (z. B. `0004` für Mast 4, `0030` für Mast 30, `P002` für Portalmast P2). P-Präfix kennzeichnet Portalmasten in Umspannwerken (Leitungs-Endpunkte). Suffix-Handling für Varianten (A/B/C, z. B. `011A`) | 🔲 offen |
+| 0.2.4 | GeoJSON-Erzeugung | Mast-Liste → `FeatureCollection<Point>` mit Properties (`mastId`, `bl`, `lotName`, `maststandortpflege` (Boolean, Default `false`), `kreis`, `leitungName`) | 🔲 offen |
+| 0.2.5 | Maststandortpflege-Erkennung | Kein Status-Feld im Mengengerüst → `maststandortpflege` wird manuell vom Nutzer gesetzt. Typen für Erweiterbarkeit vorbereiten: `lotSource` (`westnetz` | `amprion` | `manual`), `lotName` frei definierbar. Manuelle Auswahl von BL+Masten + Los-Name für Fremd-Lose ermöglichen | 🔲 offen |
 
 ### Meilenstein 0.3: Log-Parsing (Mast ↔ Blattschnitt)
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 0.3.1 | Log-Struktur analysieren | Drei Sektionen: Header, Mast↔Blatt-Mapping, Druck-Log. Parsing mit Regex |
-| 0.3.2 | Mast↔Blatt-Mapping extrahieren | `Mast (\d{4}/\d{3,4}[A-C]?) in ÖTM-Blattschnitt (.+)-(\d{4})` → Mast-ID → Sheet-Liste. Dient als Grundlage für Georeferenzierung (welche Mast-Koordinaten sind im PDF zu erwarten) |
-| 0.3.3 | Blatt-ID-Gewinnung | Primär über Dateinamen: `ÖTM-<Los-Nr> <Los-Name>-<Blatt-Nr>.PDF` (z. B. `ÖTM-2009 Mönchengladbach-Grevenbroich-0001.PDF`). Log-Druck-Einträge als Fallback/Validierung |
-| 0.3.4 | Datei-Filterung | **Ausschließen:** `LP-*.PDF` (Lagepläne — werden nicht für Kontrolle/Markierung verwendet, da Inhalt bereits in regulären Blattschnitten enthalten). `OETM_LOSBLATT-*.PDF` (Übersichtskarten — keine Einzel-Blätter). Nur `ÖTM-*.PDF` als Blattschnitte behandeln |
-| 0.3.5 | Fehlende Maste ignorieren | `FEHLER: Mast ... nicht in Grafik vorhanden` wird nicht ausgewertet — Log dient nur als Positivliste für die Georeferenzierung |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 0.3.1 | Log-Struktur analysieren | Drei Sektionen: Header, Mast↔Blatt-Mapping, Druck-Log. Parsing mit Regex | 🔲 offen |
+| 0.3.2 | Mast↔Blatt-Mapping extrahieren | `Mast (\d{4}/\d{3,4}[A-C]?) in ÖTM-Blattschnitt (.+)-(\d{4})` → Mast-ID → Sheet-Liste. Dient als Grundlage für Georeferenzierung (welche Mast-Koordinaten sind im PDF zu erwarten) | 🔲 offen |
+| 0.3.3 | Blatt-ID-Gewinnung | Primär über Dateinamen: `ÖTM-<Los-Nr> <Los-Name>-<Blatt-Nr>.PDF` (z. B. `ÖTM-2009 Mönchengladbach-Grevenbroich-0001.PDF`). Log-Druck-Einträge als Fallback/Validierung | 🔲 offen |
+| 0.3.4 | Datei-Filterung | **Ausschließen:** `LP-*.PDF` (Lagepläne — werden nicht für Kontrolle/Markierung verwendet, da Inhalt bereits in regulären Blattschnitten enthalten). `OETM_LOSBLATT-*.PDF` (Übersichtskarten — keine Einzel-Blätter). Nur `ÖTM-*.PDF` als Blattschnitte behandeln | 🔲 offen |
+| 0.3.5 | Fehlende Maste ignorieren | `FEHLER: Mast ... nicht in Grafik vorhanden` wird nicht ausgewertet — Log dient nur als Positivliste für die Georeferenzierung | 🔲 offen |
 
 ### Meilenstein 0.4: Python-Sidecar für PDF-Verarbeitung
 
@@ -75,16 +75,17 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 ### Meilenstein 0.5: Auf-Abnahmeformular-Parser
 
-| # | Teilschritt | Details |
-|---|-------------|---------|
-| 0.5.1 | `Auf-Abnahmeformular_*.xlsx` Parser | Sheet `Daten` einlesen. Vollständige Spaltenliste (29 Spalten): `ÖTM-Plan-Nr.`, `Pflegeeinheiten-nummern (PE)`, `Bl.`, `von Mast (Einzelmast)`, `bis Mast`, `Beschreiben Sie die zu pflegende Fläche…`, `Schutzstreifenerweiterung`, `Eigentümer (optional)`, `Schaltung benötigt? (ja/nein)`, `Länge in m`, `Breite in m`, `Größe in m²`, `Einzelentnahme St.`, `Kronenrückschnitt St.`, `Durchforsten %`, `Durchforsten m²`, `Entbuschen %`, `Entbuschen m²`, `Auf den Stock setzen %`, `Auf den Stock setzen m²`, `Mulchen %`, `Mulchen m²`, `Mähen %`, `Mähen m²`, `Maststandortpflege %`, `Maststandortpflege m²`, `Maßnahme erfolgt am (Datum)` |
-| 0.5.2 | Maßnahmen-Typen | **Flächen-Maßnahmen:** benötigen qm- und %-Angabe (z. B. `Entbuschen %` + `Entbuschen m²`). **Stück-Maßnahmen:** benötigen Mengenangabe (z. B. `Einzelentnahme St.`, `Kronenrückschnitt St.`). **Linien-Maßnahmen:** `Länge in m` + `Breite in m` → `Größe in m²` (frei definierbare Maßnahme als Linie mit Breite). Typ-Erkennung über befüllte Felder |
-| 0.5.3 | Excel-Ausgabe (Schreibfähigkeit) | Maßnahmen aus App werden in eine **separate, neu angelegte** Excel-Datei geschrieben — nicht in das Original-Template. Struktur (Spaltenreihenfolge, Formatierung) wird vom Template übernommen |
+| # | Teilschritt | Details | Status |
+|---|-------------|---------|--------|
+| 0.5.1 | `Auf-Abnahmeformular_*.xlsx` Parser | Sheet `Daten` einlesen. Vollständige Spaltenliste (29 Spalten): `ÖTM-Plan-Nr.`, `Pflegeeinheiten-nummern (PE)`, `Bl.`, `von Mast (Einzelmast)`, `bis Mast`, `Beschreiben Sie die zu pflegende Fläche…`, `Schutzstreifenerweiterung`, `Eigentümer (optional)`, `Schaltung benötigt? (ja/nein)`, `Länge in m`, `Breite in m`, `Größe in m²`, `Einzelentnahme St.`, `Kronenrückschnitt St.`, `Durchforsten %`, `Durchforsten m²`, `Entbuschen %`, `Entbuschen m²`, `Auf den Stock setzen %`, `Auf den Stock setzen m²`, `Mulchen %`, `Mulchen m²`, `Mähen %`, `Mähen m²`, `Maststandortpflege %`, `Maststandortpflege m²`, `Maßnahme erfolgt am (Datum)` | 🔲 offen |
+| 0.5.2 | Maßnahmen-Typen | **Flächen-Maßnahmen:** benötigen qm- und %-Angabe (z. B. `Entbuschen %` + `Entbuschen m²`). **Stück-Maßnahmen:** benötigen Mengenangabe (z. B. `Einzelentnahme St.`, `Kronenrückschnitt St.`). **Linien-Maßnahmen:** `Länge in m` + `Breite in m` → `Größe in m²` (frei definierbare Maßnahme als Linie mit Breite). Typ-Erkennung über befüllte Felder | 🔲 offen |
+| 0.5.3 | Excel-Ausgabe (Schreibfähigkeit) | Maßnahmen aus App werden in eine **separate, neu angelegte** Excel-Datei geschrieben — nicht in das Original-Template. Struktur (Spaltenreihenfolge, Formatierung) wird vom Template übernommen | 🔲 offen |
 
 **Ressourcen Phase 0:**
 - `xlsx` npm package (≈ 600 KB) oder DuckDB-WASM (bereits im Projekt via `maplibre-duckdb`)
 - `PyMuPDF` Python package (≈ 15 MB, platform-binaries)
-- Aufwand: ca. 5–7 Arbeitstage
+- Aufwand: ca. 5–7 Arbeitstage (davon ~1,5 AT erledigt: Meilenstein 0.1 komplett; PDF-Extraktor in `scripts/oetm_pdf_extractor.py` als Vorarbeit für 0.4 fertig)
+- **Verbleibend:** ~3,5–5,5 AT (0.2 Excel-Parsing, 0.3 Log-Parsing, 0.4 Sidecar-Router, 0.5 Auf-Abnahmeformular)
 
 **Risiken Phase 0:**
 | Risiko | Eintrittsw. | Auswirkung | Gegenmaßnahme |
@@ -334,16 +335,16 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 ## Zusammenfassung: Aufwandsschätzung
 
-| Phase | Inhalt | Geschätzte Arbeitstage |
-|-------|--------|------------------------|
-| 0 | Vorbereitung & Infrastruktur | 5–7 |
-| 1 | MVP: Blattschnitte & Masten | 8–12 |
-| 2 | Direkte Markierung & Maßnahmen (inkl. PDF-Import) | 6–10 |
-| 3 | Auf-Abnahmeformular & Export | 5–8 |
-| 4 | Optimierung & Erweiterung (PDF-Viewer, Georeferenzierung, Multi-Los) | 4–6 |
-| 5 | Qualitätssicherung & Tests | 3–5 |
-| 6 | Rollout & Pilotphase | 3–5 (nebenläufig) |
-| **Summe** | | **35–53 AT** |
+| Phase | Inhalt | Geschätzte Arbeitstage | Status |
+|-------|--------|------------------------|--------|
+| 0 | Vorbereitung & Infrastruktur | 5–7 (verbleibend: ~3,5–5,5) | 🟡 25% — 0.1 ✅, PDF-Extraktor ✅ |
+| 1 | MVP: Blattschnitte & Masten | 8–12 | 🔲 offen |
+| 2 | Direkte Markierung & Maßnahmen (inkl. PDF-Import) | 6–10 | 🔲 offen |
+| 3 | Auf-Abnahmeformular & Export | 5–8 | 🔲 offen |
+| 4 | Optimierung & Erweiterung (PDF-Viewer, Georeferenzierung, Multi-Los) | 4–6 | 🔲 offen |
+| 5 | Qualitätssicherung & Tests | 3–5 | 🔲 offen |
+| 6 | Rollout & Pilotphase | 3–5 (nebenläufig) | 🔲 offen |
+| **Summe** | | **35–53 AT** | **~4,5% erledigt** |
 
 ---
 
@@ -420,10 +421,13 @@ Diese müssen vor oder während der Implementierung geklärt werden (siehe auch 
 
 ## Nächste Schritte (unmittelbar)
 
-1. **Entscheidungen treffen:** Offene Punkte oben mit Fachseite klären (insb. Status-Werte, Maßnahmen-Pflichtfelder).
-2. **Phase 0 starten:** Plugin-Grundgerüst + Excel/Log-Parsing mit Daten aus `2006 Köln`.
-3. **PDF-Viewer evaluieren:** [lector-weld](https://lector-weld.vercel.app/docs/basic-usage) oder Alternative auf Integrationstauglichkeit prüfen.
-4. **Sidecar-Endpunkte prototypen:** `oetm/sheet-bbox` und `oetm/georeference` mit einem Beispiel-PDF testen.
+1. **~~Entscheidungen treffen~~** → Fachliche Klärung läuft parallel, Blockiert Implementierung nicht.
+2. **~~Phase 0 starten~~** → Meilenstein 0.1 (Plugin-Grundgerüst) ✅ abgeschlossen. PDF-Extraktor (`scripts/oetm_pdf_extractor.py`) ✅ fertig.
+3. **Phase 0 fortsetzen (jetzt):**
+   - **0.4 Sidecar-Router:** `backend/.../oetm.py` — FastAPI-Endpunkte, die den fertigen PDF-Extraktor kapseln (parallel zu 0.2/0.3).
+   - **0.2 Excel-Parsing:** Client-seitiger `Mengengerüst_*.xlsx`-Reader (parallel zu 0.4).
+   - **0.3 Log-Parsing:** Mast↔Blatt-Mapping aus `.log`-Dateien (parallel zu 0.2/0.4).
+4. **PDF-Viewer evaluieren:** [lector-weld](https://lector-weld.vercel.app/docs/basic-usage) oder Alternative auf Integrationstauglichkeit prüfen (niedrigere Priorität, für Phase 4).
 5. **MVP-Demo vorbereiten:** Sobald Blattschnitte und Maste auf Karte sichtbar sind → Demo mit Fachseite.
 
 ---
