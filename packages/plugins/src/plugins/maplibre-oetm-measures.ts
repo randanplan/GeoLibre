@@ -12,43 +12,7 @@ import type { OetmMeasure, OetmMeasureType, OetmSheet } from "../oetm-types";
 // ═════════════════════════════════════════════════════════════════════════════
 // Types
 // ═════════════════════════════════════════════════════════════════════════════
-
-interface MeasureFormData {
-  id: string;
-  measureType: OetmMeasureType;
-  geometry: GeoJSON.Geometry | null;
-  oetmPlanNr: string;
-  pflegeeinheitenNummern: string;
-  bl: string;
-  vonMast: string;
-  bisMast: string;
-  beschreibung: string;
-  schutzstreifenerweiterung: string;
-  eigentuemer: string;
-  schaltungBenoetigt: string;
-  laengeM: number;
-  breiteM: number;
-  groesseQm: number;
-  einzelentnahmeSt: number;
-  kronenrueckschnittSt: number;
-  durchforstenProzent: number;
-  durchforstenQm: number;
-  entbuschenProzent: number;
-  entbuschenQm: number;
-  aufDenStockSetzenProzent: number;
-  aufDenStockSetzenQm: number;
-  mulchenProzent: number;
-  mulchenQm: number;
-  maehenProzent: number;
-  maehenQm: number;
-  maststandortpflegeProzent: number;
-  maststandortpflegeQm: number;
-  massnahmeDatum: string;
-  sheetId: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
+// State
 // ═════════════════════════════════════════════════════════════════════════════
 // State
 // ═════════════════════════════════════════════════════════════════════════════
@@ -96,7 +60,7 @@ export function setMeasures(data: OetmMeasure[]) {
 }
 
 export function addMeasure(measure: OetmMeasure) {
-  measures.push(measure);
+  measures = [...measures, measure];
   syncMeasureLayer();
   onMeasuresChanged?.();
 }
@@ -324,14 +288,28 @@ function finishDrawing() {
 }
 
 function findSheetForGeometry(geometry: GeoJSON.Geometry): string {
+  // Bestimme Prüfpunkt: bei Point der Punkt selbst, bei Polygon der erste Ring-Punkt, bei LineString der Mittelpunkt
+  let testPoint: [number, number] | null = null;
+
   if (geometry.type === "Point") {
-    const [lng, lat] = geometry.coordinates;
-    for (const s of activeSheets) {
-      if (!s.bbox) continue;
-      const [w, south, e, n] = s.bbox;
-      if (lng >= w && lng <= e && lat >= south && lat <= n) {
-        return s.sheetId;
-      }
+    testPoint = geometry.coordinates as [number, number];
+  } else if (geometry.type === "Polygon" && geometry.coordinates[0].length > 0) {
+    // Erster Punkt des äußeren Rings (einfach, aber ausreichend)
+    testPoint = geometry.coordinates[0][0] as [number, number];
+  } else if (geometry.type === "LineString" && geometry.coordinates.length > 0) {
+    // Mittelpunkt der Linie
+    const mid = Math.floor(geometry.coordinates.length / 2);
+    testPoint = geometry.coordinates[mid] as [number, number];
+  }
+
+  if (!testPoint) return "";
+
+  const [lng, lat] = testPoint;
+  for (const s of activeSheets) {
+    if (!s.bbox) continue;
+    const [w, south, e, n] = s.bbox;
+    if (lng >= w && lng <= e && lat >= south && lat <= n) {
+      return s.sheetId;
     }
   }
   return "";
@@ -608,12 +586,21 @@ function deleteMeasure(id: string) {
 // PDF-Import (Sidecar)
 // ═════════════════════════════════════════════════════════════════════════════
 
-export async function importMeasuresFromPdf(pdfPath: string): Promise<number> {
+export async function importMeasuresFromPdf(file: File): Promise<number> {
   try {
-    const resp = await fetch(`http://127.0.0.1:8765/oetm/sheet-detail-table`, {
+    // Datei als base64 kodieren
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const pdfBase64 = btoa(binary);
+
+    const resp = await fetch(`http://127.0.0.1:8765/oetm/sheet-detail-table-upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pdf_path: pdfPath }),
+      body: JSON.stringify({ pdf_base64: pdfBase64 }),
     });
     if (!resp.ok) {
       console.error("[ÖTM] Sidecar-Fehler:", resp.status, await resp.text());
@@ -627,9 +614,11 @@ export async function importMeasuresFromPdf(pdfPath: string): Promise<number> {
       if (!row.typ && !row.nr) continue;
 
       const now = new Date().toISOString();
+      const t = (row.typ ?? "").toLowerCase();
+      const measureType: OetmMeasureType = t.includes("fl") ? "flaeche" : t.includes("li") ? "linie" : "stueck";
       const measure: OetmMeasure = {
         id: uuid(),
-        measureType: row.typ?.toLowerCase().includes("fl") ? "flaeche" : "stueck",
+        measureType,
         geometry: null,
         oetmPlanNr: "",
         pflegeeinheitenNummern: row.nr ?? "",
@@ -748,14 +737,19 @@ export function buildMeasureSection(container: HTMLElement) {
   section.appendChild(cancelRow);
 
   // Escape-Taste zum Abbrechen
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && isDrawing) {
-      cancelDrawing();
-      section.innerHTML = "";
-      buildMeasureSection(section);
-    }
+  let escHandler: ((e: KeyboardEvent) => void) | null = null;
+  const registerEscHandler = () => {
+    if (escHandler) document.removeEventListener("keydown", escHandler);
+    escHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isDrawing) {
+        cancelDrawing();
+        section.innerHTML = "";
+        buildMeasureSection(section);
+      }
+    };
+    document.addEventListener("keydown", escHandler);
   };
-  document.addEventListener("keydown", escHandler);
+  registerEscHandler();
 
   // Maßnahmen-Liste
   const measureList = document.createElement("div");

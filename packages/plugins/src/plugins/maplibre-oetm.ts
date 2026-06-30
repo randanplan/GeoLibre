@@ -17,13 +17,10 @@ import type {
   OetmSheetStatus,
 } from "../oetm-types";
 import { loadLot, mastsToGeoJson } from "../oetm-parser";
-import type { Map as MapLibreMap, GeoJSONSource, Popup } from "maplibre-gl";
+import type { Map as MapLibreMap, GeoJSONSource } from "maplibre-gl";
 import { Popup as MaplibrePopup } from "maplibre-gl";
 import {
   initMeasuresModule,
-  setMeasuresContext,
-  getMeasures,
-  setMeasures,
   buildMeasureSection,
   importMeasuresFromPdf,
 } from "./maplibre-oetm-measures";
@@ -430,7 +427,6 @@ async function handleLoadLot() {
     }
 
     ensureLotLayers(lot);
-    setMeasuresContext(lot.lotNumber, lot.sheets);
     initMeasuresModule(appRef!, () => activeLotNumber, () => activeLotNumber && lots[activeLotNumber] ? lots[activeLotNumber].sheets : [], () => { reRenderWorkbench(); });
     reRenderWorkbench();
     console.log(`[ÖTM] Los ${lot.label} geladen: ${lot.sheets.length} Blätter, ${lot.masts.length} Maste`);
@@ -805,9 +801,10 @@ function buildToolbarMenu(): GeoLibreToolbarMenu {
             const file = input.files?.[0];
             if (!file) return;
             document.body.removeChild(input);
-            const imported = await importMeasuresFromPdf(file.name);
+            const imported = await importMeasuresFromPdf(file);
             if (imported > 0) {
               reRenderWorkbench();
+              alert(`${imported} Maßnahmen aus PDF importiert`);
             }
           });
           input.click();

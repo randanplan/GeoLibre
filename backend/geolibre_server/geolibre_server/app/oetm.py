@@ -12,8 +12,10 @@ IMPLEMENTATION_PLAN ref: Phase 0.4, Meilensteine 0.4.1–0.4.9
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Optional
+import io
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -128,6 +130,17 @@ class RenderRegionRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     pymupdf_available: bool
+
+
+class SheetUploadRequest(BaseModel):
+    """Request with a base64-encoded PDF for upload endpoints."""
+
+    pdf_base64: str
+
+
+class SheetUploadResponse(BaseModel):
+    imported: int
+    rows: list[DetailRowResponse]
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -367,6 +380,42 @@ def sheet_detail_table(req: SheetRequest):
     from . import oetm_extractor as ext
 
     doc = _open_pdf(req.pdf_path)
+    try:
+        page = doc[0]
+        layout = ext.get_layout(page)
+        rows = ext.analyse_detail_table(page, layout)
+        return [
+            DetailRowResponse(
+                typ=r.get("typ"),
+                nr=r.get("nr"),
+                flaeche_qm=r.get("flaeche_qm"),
+                pflege=r.get("pflege"),
+                aufarbeitungsform=r.get("aufarbeitungsform"),
+            )
+            for r in rows
+        ]
+    finally:
+        doc.close()
+
+
+@router.post("/sheet-detail-table-upload", response_model=list[DetailRowResponse])
+def sheet_detail_table_upload(req: SheetUploadRequest):
+    """Extract measure entries from a base64-uploaded PDF.
+
+    Accepts a base64-encoded PDF instead of a file path, so the
+    browser/webview can send the PDF content directly without the
+    sidecar needing filesystem access.
+    """
+    _check_extractor()
+    from . import oetm_extractor as ext
+    import fitz
+
+    try:
+        pdf_bytes = base64.b64decode(req.pdf_base64)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot open PDF: {exc}")
+
     try:
         page = doc[0]
         layout = ext.get_layout(page)
