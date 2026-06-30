@@ -2356,5 +2356,30 @@
     "cogConvertFailed": "Could not convert \"{{name}}\" to a Cloud-Optimized GeoTIFF. Try converting it with gdal_translate or rio cogeo, then load the result.",
     "rasterDownloadFailed": "Could not download \"{{name}}\". The server may be slow, unreachable, or blocking cross-origin requests, or the file may be too large to hold in memory. Check the URL and try again.",
     "rasterNotGeotiff": "\"{{name}}\" did not return a GeoTIFF. The server may have sent an error or login page instead. Check the URL and try again."
+  },
+  "oetm": {
+    "pluginName": "ÖTM Survey",
+    "workbench": "ÖTM Workbench",
+    "menuLabel": "ÖTM",
+    "loadLot": "Load Lot",
+    "loadLotDescription": "Opens a lot folder and loads sheet boundaries, masts, and log data",
+    "statusOverview": "Status Overview",
+    "toggleMasts": "Toggle Masts",
+    "export": "Export",
+    "loadedLots": "Loaded Lots",
+    "active": "Active",
+    "sheets": "Sheets",
+    "masts": "Masts",
+    "measures": "Measures",
+    "controlled": "controlled",
+    "sheetStatus": {
+      "offen": "Open",
+      "inArbeit": "In Progress",
+      "kontrolliert": "Controlled",
+      "abgenommen": "Accepted"
+    },
+    "maststandortpflege": "Mast Site Maintenance",
+    "maststandortpflegeFilter": "Only masts without site maintenance",
+    "hideControlled": "Hide controlled sheets"
   }
 }

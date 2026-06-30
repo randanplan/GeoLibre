@@ -320,3 +320,19 @@ export {
   type TimeWindow,
 } from "./plugins/time-slider-binding";
 export { WEB_SERVICE_PLUGIN_IDS } from "./plugins/web-service-sync";
+
+// ── ÖTM-Plugin ───────────────────────────────────────────────────────────
+export {
+  maplibreOetmPlugin,
+  OETM_PLUGIN_ID,
+} from "./plugins/maplibre-oetm";
+export type {
+  OetmLot,
+  OetmLotSource,
+  OetmMast,
+  OetmMeasure,
+  OetmMeasureType,
+  OetmPluginState,
+  OetmSheet,
+  OetmSheetStatus,
+} from "./oetm-types";

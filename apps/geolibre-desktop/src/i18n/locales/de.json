@@ -311,5 +311,30 @@
       "invalidOsmPbfUrl": "Geben Sie eine gültige http(s)-URL zu einer .osm.pbf-Datei ein.",
       "couldNotDownloadOsmPbf": "Die OSM PBF-Datei konnte nicht heruntergeladen werden."
     }
+  },
+  "oetm": {
+    "pluginName": "ÖTM-Aufnahme",
+    "workbench": "ÖTM-Workbench",
+    "menuLabel": "ÖTM",
+    "loadLot": "Los laden",
+    "loadLotDescription": "Öffnet einen Los-Ordner und lädt Blattschnitte, Maste und Log-Daten",
+    "statusOverview": "Statusübersicht",
+    "toggleMasts": "Masten ein-/ausblenden",
+    "export": "Export",
+    "loadedLots": "Geladene Lose",
+    "active": "Aktiv",
+    "sheets": "Blattschnitte",
+    "masts": "Maste",
+    "measures": "Maßnahmen",
+    "controlled": "kontrolliert",
+    "sheetStatus": {
+      "offen": "Offen",
+      "inArbeit": "In Arbeit",
+      "kontrolliert": "Kontrolliert",
+      "abgenommen": "Abgenommen"
+    },
+    "maststandortpflege": "Maststandortpflege",
+    "maststandortpflegeFilter": "Nur Maste ohne Standortpflege",
+    "hideControlled": "Kontrollierte ausblenden"
   }
 }
