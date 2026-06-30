@@ -336,3 +336,13 @@ export type {
   OetmSheet,
   OetmSheetStatus,
 } from "./oetm-types";
+export {
+  loadLot,
+  mastsToGeoJson,
+  parseLog,
+  parseMengengeruest,
+} from "./oetm-parser";
+export type {
+  LogParseResult,
+  LoadLotOptions,
+} from "./oetm-parser";

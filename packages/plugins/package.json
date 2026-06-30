@@ -41,12 +41,12 @@
     "maplibre-gl-geo-editor": "^0.9.1",
     "maplibre-gl-geoagent": "^0.5.4",
     "maplibre-gl-lidar": "^0.16.2",
-    "maplibre-gl-splat": "^0.2.8",
     "maplibre-gl-nasa-earthdata": "^0.1.4",
     "maplibre-gl-national-map": "^0.1.1",
     "maplibre-gl-overture-maps": "^0.3.1",
     "maplibre-gl-planetary-computer": "^0.3.0",
     "maplibre-gl-raster": "^0.6.4",
+    "maplibre-gl-splat": "^0.2.8",
     "maplibre-gl-streetview": "^0.7.0",
     "maplibre-gl-swipe": "^0.10.1",
     "maplibre-gl-time-slider": "^1.1.0",
@@ -54,7 +54,8 @@
     "maplibre-gl-vector": "^0.8.4",
     "proj4": "^2.20.9",
     "shpjs": "^6.2.0",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.16",

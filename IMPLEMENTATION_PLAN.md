@@ -33,21 +33,21 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 | # | Teilschritt | Details | Status |
 |---|-------------|---------|--------|
-| 0.2.1 | Client-seitiger XLSX-Reader | `npm install xlsx` im Plugin-Pfad oder Nutzung von DuckDB-WASM Spatial Extension (`ST_Read` via `importTextFile`-Blob) | 🔲 offen |
-| 0.2.2 | `Mengengerüst_*.xlsx` Parser | Sheet `2026-27` einlesen → Spalten: `BL`, `LName`, `Mast`, `Länge_m`, `LeitBez_Team`, `Kreis`, `ÖTM_Los`, `GEO_X`, `GEO_Y` (kein Status-Feld vorhanden) | 🔲 offen |
-| 0.2.3 | Mast-ID Konstruktion | Zusammengesetzter Schlüssel: `BL + Mast` (z. B. `00120030`). BL-Nummern sind immer 4-stellig; Mast-Nummern werden 4-stellig gepadded (z. B. `0004` für Mast 4, `0030` für Mast 30, `P002` für Portalmast P2). P-Präfix kennzeichnet Portalmasten in Umspannwerken (Leitungs-Endpunkte). Suffix-Handling für Varianten (A/B/C, z. B. `011A`) | 🔲 offen |
-| 0.2.4 | GeoJSON-Erzeugung | Mast-Liste → `FeatureCollection<Point>` mit Properties (`mastId`, `bl`, `lotName`, `maststandortpflege` (Boolean, Default `false`), `kreis`, `leitungName`) | 🔲 offen |
-| 0.2.5 | Maststandortpflege-Erkennung | Kein Status-Feld im Mengengerüst → `maststandortpflege` wird manuell vom Nutzer gesetzt. Typen für Erweiterbarkeit vorbereiten: `lotSource` (`westnetz` | `amprion` | `manual`), `lotName` frei definierbar. Manuelle Auswahl von BL+Masten + Los-Name für Fremd-Lose ermöglichen | 🔲 offen |
+| 0.2.1 | Client-seitiger XLSX-Reader | `npm install xlsx` im Plugin-Pfad (`@geolibre/plugins`) | ✅ erledigt |
+| 0.2.2 | `Mengengerüst_*.xlsx` Parser | Sheet `2026-27` einlesen → `parseMengengeruest()` in `oetm-parser.ts` | ✅ erledigt |
+| 0.2.3 | Mast-ID Konstruktion | `buildMastId()` in `oetm-parser.ts` — BL (4-stellig) + Mast (gepadded mit P-Präfix, Buchstaben-Suffix) | ✅ erledigt |
+| 0.2.4 | GeoJSON-Erzeugung | `mastsToGeoJson()` in `oetm-parser.ts` — `FeatureCollection<Point>` | ✅ erledigt |
+| 0.2.5 | Maststandortpflege-Erkennung | Default `false`; manuelle Setzung durch Nutzer. `lotSource`-Typen vorbereitet | ✅ erledigt |
 
 ### Meilenstein 0.3: Log-Parsing (Mast ↔ Blattschnitt)
 
 | # | Teilschritt | Details | Status |
 |---|-------------|---------|--------|
-| 0.3.1 | Log-Struktur analysieren | Drei Sektionen: Header, Mast↔Blatt-Mapping, Druck-Log. Parsing mit Regex | 🔲 offen |
-| 0.3.2 | Mast↔Blatt-Mapping extrahieren | `Mast (\d{4}/\d{3,4}[A-C]?) in ÖTM-Blattschnitt (.+)-(\d{4})` → Mast-ID → Sheet-Liste. Dient als Grundlage für Georeferenzierung (welche Mast-Koordinaten sind im PDF zu erwarten) | 🔲 offen |
-| 0.3.3 | Blatt-ID-Gewinnung | Primär über Dateinamen: `ÖTM-<Los-Nr> <Los-Name>-<Blatt-Nr>.PDF` (z. B. `ÖTM-2009 Mönchengladbach-Grevenbroich-0001.PDF`). Log-Druck-Einträge als Fallback/Validierung | 🔲 offen |
-| 0.3.4 | Datei-Filterung | **Ausschließen:** `LP-*.PDF` (Lagepläne — werden nicht für Kontrolle/Markierung verwendet, da Inhalt bereits in regulären Blattschnitten enthalten). `OETM_LOSBLATT-*.PDF` (Übersichtskarten — keine Einzel-Blätter). Nur `ÖTM-*.PDF` als Blattschnitte behandeln | 🔲 offen |
-| 0.3.5 | Fehlende Maste ignorieren | `FEHLER: Mast ... nicht in Grafik vorhanden` wird nicht ausgewertet — Log dient nur als Positivliste für die Georeferenzierung | 🔲 offen |
+| 0.3.1 | Log-Struktur analysieren | Drei Sektionen: Header, Mast↔Blatt-Mapping, Druck-Log. `parseLogHeader()` + `parseMastSheetMapping()` in `oetm-parser.ts` | ✅ erledigt |
+| 0.3.2 | Mast↔Blatt-Mapping extrahieren | `Mast (\d{4}/\d{3,4}[A-C]?) in ÖTM-Blattschnitt (.+)-(\d{4})` → `Map<mastId, sheetIds[]>` | ✅ erledigt |
+| 0.3.3 | Blatt-ID-Gewinnung | `extractSheetsFromFileNames()` — Regex auf `ÖTM-*.PDF`, Ausschluss von `LP-*` und `OETM_LOSBLATT-*` | ✅ erledigt |
+| 0.3.4 | Datei-Filterung | `LP-*.PDF` und `OETM_LOSBLATT-*.PDF` werden in `extractSheetsFromFileNames()` ausgeschlossen | ✅ erledigt |
+| 0.3.5 | Fehlende Maste ignorieren | Log dient als Positivliste; `FEHLER:`-Zeilen werden ignoriert | ✅ erledigt |
 
 ### Meilenstein 0.4: Python-Sidecar für PDF-Verarbeitung
 
@@ -63,29 +63,29 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 | # | Teilschritt | Details | Status |
 |---|-------------|---------|--------|
-| 0.4.1 | Sidecar-Modul anlegen | `backend/geolibre_server/geolibre_server/app/oetm.py` — Endpunkte. Importiert Kernlogik aus `scripts/oetm_pdf_extractor.py` | offen |
-| 0.4.2 | Router registrieren | In `backend/geolibre_server/geolibre_server/app/main.py`: `app.include_router(oetm_router, prefix="/oetm")` | offen |
-| 0.4.3 | PyMuPDF-Abhängigkeit | `pip install PyMuPDF`; in `pyproject.toml` unter `[project.optional-dependencies]` als `oetm`-Extra aufnehmen | offen |
-| 0.4.4 | PDF-Viewer-Integration | PDF-Viewer (z. B. [lector-weld](https://lector-weld.vercel.app/docs/basic-usage)) client-seitig einbinden. Viewer dient visueller Inspektion und interaktiver GCP-Auswahl. Server-seitiges Rendering via `render_region_to_png()` aus dem Extraktor als Fallback | offen |
-| 0.4.5 | Endpunkt: Blattschnitt-Metadaten | `POST /oetm/sheet-metadata` — Extrahiert aus Titelblock: Blattnummer, Los-Bezeichnung, Maßstab (z. B. `1:2000`), Datum. Nutzt `extract_text_by_region()` auf Titelblock-Bereich | offen |
-| 0.4.6 | Endpunkt: Blattschnitt-BBOX | `POST /oetm/sheet-bbox` — Gibt Pixel-BBOX des Hauptkarten-Bereichs zurück: `{x0: 71, y0: 14, x1: pageW−1572, y1: 828, pageW, pageH}`. Liegt das PDF bereits georeferenziert vor, werden WGS84-Koordinaten extrahiert | offen |
-| 0.4.7 | Endpunkt: Detail-Tabelle | `POST /oetm/sheet-detail-table` — Extrahiert die vorhandenen Maßnahmen aus der Detail-Informationen-Tabelle (Spalten: Typ, Nr., Fläche qm, Pflege %/St., Aufarbeitungsform). Nutzt `analyse_detail_table()`. Ermöglicht **Import existierender Maßnahmen aus PDFs** in die App → beschleunigt Phase 2 erheblich | offen |
-| 0.4.8 | Endpunkt: Georeferenzierung | `POST /oetm/georeference` — Nimmt Mast-Koordinaten (WGS84) + korrespondierende PDF-Pixelkoordinaten (aus Hauptkarten-Bereich), berechnet Affine-Transformation. Nutzt Mast↔Blatt-Mapping aus Log als GCP-Quelle | offen |
-| 0.4.9 | Sidecar-Statusprüfung | `GET /oetm/health` — Gibt verfügbare Extras zurück (`pymupdf`, `rasterio`, etc.) | offen |
+| 0.4.1 | Sidecar-Modul anlegen | `backend/geolibre_server/geolibre_server/app/oetm.py` — FastAPI-Router mit Pydantic-Models. Importiert Kernlogik via `sys.path` aus `scripts/oetm_pdf_extractor.py`. 10 Endpunkte (vgl. Plan: 6 + 4 Zusatz-Endpunkte für Layout, Render-Region, Mast-Candidates) | ✅ erledigt |
+| 0.4.2 | Router registrieren | In `backend/geolibre_server/geolibre_server/app/main.py`: `from .oetm import router as oetm_router` + `app.include_router(oetm_router)` | ✅ erledigt |
+| 0.4.3 | PyMuPDF-Abhängigkeit | `pip install PyMuPDF`; in `pyproject.toml` unter `[project.optional-dependencies]` als `oetm`-Extra (`"PyMuPDF>=1.23.0"`) + in `test`-Extra aufgenommen | ✅ erledigt |
+| 0.4.4 | PDF-Viewer-Integration | PDF-Viewer (z. B. [lector-weld](https://lector-weld.vercel.app/docs/basic-usage)) client-seitig einbinden. Viewer dient visueller Inspektion und interaktiver GCP-Auswahl. Server-seitiges Rendering via `render_region_to_png()` aus dem Extraktor als Fallback | 🔲 offen |
+| 0.4.5 | Endpunkt: Blattschnitt-Metadaten | `POST /oetm/sheet-metadata` — Extrahiert aus Titelblock: Blattnummer, Los-Bezeichnung, Maßstab (z. B. `1:2000`), Datum. Nutzt `extract_sheet_metadata()` auf Titelblock-Bereich | ✅ erledigt |
+| 0.4.6 | Endpunkt: Blattschnitt-BBOX | `POST /oetm/sheet-bbox` — Gibt Pixel-BBOX des Hauptkarten-Bereichs zurück: `{x0, y0, x1, y1, pageWidth, pageHeight}` | ✅ erledigt |
+| 0.4.7 | Endpunkt: Detail-Tabelle | `POST /oetm/sheet-detail-table` — Extrahiert die vorhandenen Maßnahmen aus der Detail-Informationen-Tabelle (Spalten: Typ, Nr., Fläche qm, Pflege %/St., Aufarbeitungsform). Nutzt `analyse_detail_table()` | ✅ erledigt |
+| 0.4.8 | Endpunkt: Georeferenzierung | `POST /oetm/georeference` — Nimmt Mast-Koordinaten (WGS84) + korrespondierende PDF-Pixelkoordinaten (aus Hauptkarten-Bereich), berechnet Affine-Transformation via Least-Squares (Cramer's Rule, pure Python). Gibt 6 Transformationsparameter + RMSE + Residual-Map zurück | ✅ erledigt |
+| 0.4.9 | Sidecar-Statusprüfung | `GET /oetm/health` — Gibt `{status, pymupdf_available}` zurück | ✅ erledigt |
 
 ### Meilenstein 0.5: Auf-Abnahmeformular-Parser
 
 | # | Teilschritt | Details | Status |
-|---|-------------|---------|--------|
-| 0.5.1 | `Auf-Abnahmeformular_*.xlsx` Parser | Sheet `Daten` einlesen. Vollständige Spaltenliste (29 Spalten): `ÖTM-Plan-Nr.`, `Pflegeeinheiten-nummern (PE)`, `Bl.`, `von Mast (Einzelmast)`, `bis Mast`, `Beschreiben Sie die zu pflegende Fläche…`, `Schutzstreifenerweiterung`, `Eigentümer (optional)`, `Schaltung benötigt? (ja/nein)`, `Länge in m`, `Breite in m`, `Größe in m²`, `Einzelentnahme St.`, `Kronenrückschnitt St.`, `Durchforsten %`, `Durchforsten m²`, `Entbuschen %`, `Entbuschen m²`, `Auf den Stock setzen %`, `Auf den Stock setzen m²`, `Mulchen %`, `Mulchen m²`, `Mähen %`, `Mähen m²`, `Maststandortpflege %`, `Maststandortpflege m²`, `Maßnahme erfolgt am (Datum)` | 🔲 offen |
-| 0.5.2 | Maßnahmen-Typen | **Flächen-Maßnahmen:** benötigen qm- und %-Angabe (z. B. `Entbuschen %` + `Entbuschen m²`). **Stück-Maßnahmen:** benötigen Mengenangabe (z. B. `Einzelentnahme St.`, `Kronenrückschnitt St.`). **Linien-Maßnahmen:** `Länge in m` + `Breite in m` → `Größe in m²` (frei definierbare Maßnahme als Linie mit Breite). Typ-Erkennung über befüllte Felder | 🔲 offen |
-| 0.5.3 | Excel-Ausgabe (Schreibfähigkeit) | Maßnahmen aus App werden in eine **separate, neu angelegte** Excel-Datei geschrieben — nicht in das Original-Template. Struktur (Spaltenreihenfolge, Formatierung) wird vom Template übernommen | 🔲 offen |
+| |-------------|---------|--------|
+| 0.5.1 | `Auf-Abnahmeformular_*.xlsx` Parser | Sheet `Daten` einlesen. Vollständige Spaltenliste (29 Spalten): `ÖTM-Plan-Nr.`, `Pflegeeinheiten-nummern (PE)`, `Bl.`, `von Mast (Einzelmast)`, `bis Mast`, `Beschreiben Sie die zu pflegende Fläche…`, `Schutzstreifenerweiterung`, `Eigentümer (optional)`, `Schaltung benötigt? (ja/nein)`, `Länge in m`, `Breite in m`, `Größe in m²`, `Einzelentnahme St.`, `Kronenrückschnitt St.`, `Durchforsten %`, `Durchforsten m²`, `Entbuschen %`, `Entbuschen m²`, `Auf den Stock setzen %`, `Auf den Stock setzen m²`, `Mulchen %`, `Mulchen m²`, `Mähen %`, `Mähen m²`, `Maststandortpflege %`, `Maststandortpflege m²`, `Maßnahme erfolgt am (Datum)` | ⏳ Grundstruktur in `oetm-parser.ts` |
+| 0.5.2 | Maßnahmen-Typen | Typ-Erkennung über befüllte Felder | 🔲 offen |
+| 0.5.3 | Excel-Ausgabe (Schreibfähigkeit) | Separate Ausgabe-Datei | 🔲 offen |
 
 **Ressourcen Phase 0:**
-- `xlsx` npm package (≈ 600 KB) oder DuckDB-WASM (bereits im Projekt via `maplibre-duckdb`)
-- `PyMuPDF` Python package (≈ 15 MB, platform-binaries)
-- Aufwand: ca. 5–7 Arbeitstage (davon ~1,5 AT erledigt: Meilenstein 0.1 komplett; PDF-Extraktor in `scripts/oetm_pdf_extractor.py` als Vorarbeit für 0.4 fertig)
-- **Verbleibend:** ~3,5–5,5 AT (0.2 Excel-Parsing, 0.3 Log-Parsing, 0.4 Sidecar-Router, 0.5 Auf-Abnahmeformular)
+- `xlsx` npm package (≈ 600 KB) — installiert in `@geolibre/plugins`
+- `PyMuPDF` Python package (≈ 15 MB, platform-binaries) — als `oetm`-Extra in `pyproject.toml`
+- Aufwand: ca. 5–7 Arbeitstage (davon ~4,5 AT erledigt: 0.1 ✅, 0.2/0.3 ✅, 0.4 ✅ außer 0.4.4 PDF-Viewer)
+- **Verbleibend:** ~0,5–2,5 AT (0.5 Auf-Abnahmeformular Schreibfunktion, 0.4.4 PDF-Viewer)
 
 **Risiken Phase 0:**
 | Risiko | Eintrittsw. | Auswirkung | Gegenmaßnahme |
@@ -337,14 +337,14 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 
 | Phase | Inhalt | Geschätzte Arbeitstage | Status |
 |-------|--------|------------------------|--------|
-| 0 | Vorbereitung & Infrastruktur | 5–7 (verbleibend: ~3,5–5,5) | 🟡 25% — 0.1 ✅, PDF-Extraktor ✅ |
-| 1 | MVP: Blattschnitte & Masten | 8–12 | 🔲 offen |
+| 0 | Vorbereitung & Infrastruktur | 5–7 (verbleibend: ~0,5–2,5) | 🟢 75% — 0.1 ✅, 0.2/0.3 ✅, 0.4 ✅ (außer 0.4.4) |
+| 1 | MVP: Blattschnitte & Masten | 8–12 | 🟡 Phase 0-Voraussetzungen erfüllt — kann starten |
 | 2 | Direkte Markierung & Maßnahmen (inkl. PDF-Import) | 6–10 | 🔲 offen |
 | 3 | Auf-Abnahmeformular & Export | 5–8 | 🔲 offen |
 | 4 | Optimierung & Erweiterung (PDF-Viewer, Georeferenzierung, Multi-Los) | 4–6 | 🔲 offen |
 | 5 | Qualitätssicherung & Tests | 3–5 | 🔲 offen |
 | 6 | Rollout & Pilotphase | 3–5 (nebenläufig) | 🔲 offen |
-| **Summe** | | **35–53 AT** | **~4,5% erledigt** |
+| **Summe** | | **35–53 AT** | **~7% erledigt** |
 
 ---
 
@@ -419,16 +419,37 @@ Diese müssen vor oder während der Implementierung geklärt werden (siehe auch 
 
 ---
 
+## Branch-Namenskonvention
+
+**Präfix:** `oetm/`
+
+**Schema:** `oetm/<phase>-<beschreibung>`
+
+| Branch | Phase | Beschreibung | Status |
+|--------|-------|-------------|--------|
+| `oetm/phase-0-infrastructure` | 0 | Plugin-Grundgerüst, Sidecar-Router, Excel/Log-Parsing | 🟡 aktiv |
+
+**Regeln:**
+- Ein Branch pro Phase (nicht pro Meilenstein), damit zusammengehörige Arbeit nicht über mehrere Branches verstreut wird.
+- Branch-Name spiegelt den **tatsächlichen** Inhalt wider, nicht den ursprünglichen Planungsumfang.
+- Bei Scope-Erweiterung: Branch umbenennen (`git branch -m <neuer-name>`), nicht neuen Branch anlegen.
+- Vor Push: Branch-Name gegen die Konvention prüfen.
+
+---
+
 ## Nächste Schritte (unmittelbar)
 
-1. **~~Entscheidungen treffen~~** → Fachliche Klärung läuft parallel, Blockiert Implementierung nicht.
-2. **~~Phase 0 starten~~** → Meilenstein 0.1 (Plugin-Grundgerüst) ✅ abgeschlossen. PDF-Extraktor (`scripts/oetm_pdf_extractor.py`) ✅ fertig.
-3. **Phase 0 fortsetzen (jetzt):**
-   - **0.4 Sidecar-Router:** `backend/.../oetm.py` — FastAPI-Endpunkte, die den fertigen PDF-Extraktor kapseln (parallel zu 0.2/0.3).
-   - **0.2 Excel-Parsing:** Client-seitiger `Mengengerüst_*.xlsx`-Reader (parallel zu 0.4).
-   - **0.3 Log-Parsing:** Mast↔Blatt-Mapping aus `.log`-Dateien (parallel zu 0.2/0.4).
-4. **PDF-Viewer evaluieren:** [lector-weld](https://lector-weld.vercel.app/docs/basic-usage) oder Alternative auf Integrationstauglichkeit prüfen (niedrigere Priorität, für Phase 4).
-5. **MVP-Demo vorbereiten:** Sobald Blattschnitte und Maste auf Karte sichtbar sind → Demo mit Fachseite.
+1. **~~Entscheidungen treffen~~** → Fachliche Klärung läuft parallel, blockiert Implementierung nicht.
+2. **~~Phase 0 starten~~** → Meilenstein 0.1 (Plugin-Grundgerüst) ✅ abgeschlossen.
+3. **~~Phase 0.4 Sidecar-Router~~** → ✅ abgeschlossen.
+4. **~~Phase 0.2/0.3 Client-Parsing~~** → ✅ abgeschlossen (`oetm-parser.ts`: Mengengerüst-Excel, Log-Dateien, Mast-ID-Konstruktion, GeoJSON-Erzeugung, Los-Ladefunktion (`loadLot()`)).
+5. **Phase 1 starten (jetzt):**
+   - **1.1 Los-Ladeprozess:** Tauri-Dialog/Filesystem-API → `loadLot()` aufrufen → Layer auf Karte erzeugen.
+   - **1.2 Blattschnitt-Layer:** Aus `OetmSheet[]` → GeoJSON-Polygone erstellen.
+   - **1.3 Mast-Layer:** `mastsToGeoJson()` → Layer auf Karte via `app.addGeoJsonLayer()`.
+   - **1.4 Statusmanagement:** Status-UI im Right-Panel mit Dropdown + Persistenz.
+6. **Phase 0.5 Auf-Abnahmeformular:** `parseAufAbnahmeForm()` Grundstruktur vorhanden — Schreibfunktion fehlt noch.
+7. **MVP-Demo vorbereiten:** Sobald Blattschnitte und Maste auf Karte sichtbar sind → Demo mit Fachseite.
 
 ---
 
@@ -536,11 +557,18 @@ Die folgenden Skripte liegen bereits im Repository vor und liefern wesentliche V
 
 ### B.3 Integration in die Sidecar-Architektur
 
-Die Kernlogik beider Skripte soll als Modul in den Python-Sidecar integriert werden:
+Die Kernlogik wurde in das `geolibre_server`-Package verschoben, sodass der
+Router sie mit relativem Import laden kann — unabhängig vom Deployment-Szenario
+(Source-Tree, Docker, Wheel-Installation):
 
 ```
-backend/geolibre_server/geolibre_server/app/oetm.py   ← Sidecar-Router (Endpunkte)
-    ↑ importiert
-scripts/oetm_pdf_extractor.py                         ← Layout-Extraktion (existiert)
-scripts/oetm_pdf_explore.py                           ← Layout-Erkundung (Referenz)
+backend/geolibre_server/geolibre_server/app/oetm.py           ← Sidecar-Router (Endpunkte)
+backend/geolibre_server/geolibre_server/app/oetm_extractor.py ← Layout-Extraktion (Kernlogik)
+scripts/oetm_pdf_extractor.py                                 ← Standalone-Demo-Wrapper (re-exportiert aus Package, mit Fallback)
+scripts/oetm_pdf_explore.py                                   ← Layout-Erkundung (Referenz)
 ```
+
+Die ursprüngliche `sys.path`-Manipulation in `oetm.py` wurde durch einen
+relativen Import (``from . import oetm_extractor``) ersetzt. Die
+`scripts/`-Version existiert weiterhin als Convenience-Wrapper für die
+Standalone-Demo (``python scripts/oetm_pdf_extractor.py``).

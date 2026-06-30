@@ -19,10 +19,17 @@ dev = [
 # `[dev]`-only install reports a misleadingly green, near-empty run. CI installs
 # this group; run it locally with `pip install -e "backend/geolibre_server[test]"`.
 test = [
-  "geolibre-server[dev,vector,raster,conversion,ml,sedona]",
+  "geolibre-server[dev,vector,raster,conversion,ml,sedona,oetm]",
 ]
 whitebox = [
   "whitebox-workflows>=2.0.2",
+]
+# ÖTM-Aufnahme plugin — PDF sheet analysis and georeferencing.
+# PyMuPDF is the core dependency; numpy provides an optional
+# acceleration path for the affine solver (pure-Python fallback
+# is built in).
+oetm = [
+  "PyMuPDF>=1.23.0",
 ]
 conversion = [
   "duckdb>=1.1.0",
