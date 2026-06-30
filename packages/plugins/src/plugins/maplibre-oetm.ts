@@ -3,10 +3,6 @@
  * ===================
  * GeoLibre-Plugin für das Ökologische Trassenmanagement (ÖTM).
  *
- * Registriert ein Toolbar-Menü "ÖTM" und ein Right-Panel "ÖTM-Workbench"
- * als primäre Arbeitsfläche. Verwaltet Los-Ladeprozess, Blattschnitt-Status,
- * Mast-Visualisierung und Maßnahmen-Export.
- *
  * IMPLEMENTATION_PLAN-Referenz: Phasen 0.1 + 1.1–1.4
  */
 import type {
@@ -21,16 +17,12 @@ import type {
   OetmSheetStatus,
 } from "../oetm-types";
 import { loadLot, mastsToGeoJson } from "../oetm-parser";
-
-// ── Plugin-Identität ─────────────────────────────────────────────────────────
+import type { Map as MapLibreMap, GeoJSONSource, Popup } from "maplibre-gl";
+import { Popup as MaplibrePopup } from "maplibre-gl";
 
 export const OETM_PLUGIN_ID = "oetm-workflow";
 const PANEL_ID = "oetm-workbench";
 const MENU_ID = "oetm-menu";
-const SHEET_LAYER_ID_PREFIX = "oetm-sheets-";
-const MAST_LAYER_ID_PREFIX = "oetm-masts-";
-
-// ── Plugin-State ─────────────────────────────────────────────────────────────
 
 let lots: Record<string, OetmLot> = {};
 let sheetStatus: Record<string, OetmSheetStatus> = {};
@@ -41,13 +33,25 @@ let ui = {
   showControlledSheets: true,
   showMaststandortpflegeOnly: false,
 };
-let activeLayerIds: string[] = [];
-
-// ── Registrierungs-Cleanup-Referenzen ────────────────────────────────────────
+/** Maps GeoLibre layer ID → { type: 'sheet' | 'mast', lotNumber } */
+let layerRegistry: Map<string, { type: "sheet" | "mast"; lotNumber: string }> = new Map();
 
 let unregisterPanel: (() => void) | null = null;
 let unregisterMenu: (() => void) | null = null;
 let appRef: GeoLibreAppAPI | null = null;
+
+// ── Status-Farben ────────────────────────────────────────────────────────────
+
+const STATUS_COLORS: Record<OetmSheetStatus, string> = {
+  "offen": "#9CA3AF",
+  "in-arbeit": "#F59E0B",
+  "kontrolliert": "#10B981",
+  "abgenommen": "#3B82F6",
+};
+
+function statusColor(status: OetmSheetStatus): string {
+  return STATUS_COLORS[status] ?? "#9CA3AF";
+}
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
@@ -92,26 +96,181 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
-// ── Layer-Management ─────────────────────────────────────────────────────────
+// ── MapLibre Layer Naming ────────────────────────────────────────────────────
+// GeoLibre names MapLibre sources/layers predictably:
+//   source-{uuid}         → MapLibre source ID
+//   layer-{uuid}-fill     → MapLibre fill layer (polygons)
+//   layer-{uuid}-circle   → MapLibre circle layer (points)
+//   layer-{uuid}-line     → MapLibre line layer (outline)
 
-function ensureLayerPrefix(prefix: string, lotNumber: string): string {
-  return `${prefix}${lotNumber}`;
+function mapLibreFillId(geoLibreLayerId: string): string {
+  return `layer-${geoLibreLayerId}-fill`;
 }
 
-function removeOldLayers() {
-  for (const id of activeLayerIds) {
-    // GeoLibre doesn't expose removeGeoJsonLayer directly, but
-    // registerExternalNativeLayer with empty data can clear it.
-    // For now we rely on the layer being replaced by the next addGeoJsonLayer call.
+function mapLibreCircleId(geoLibreLayerId: string): string {
+  return `layer-${geoLibreLayerId}-circle`;
+}
+
+// ── Layer Styling ────────────────────────────────────────────────────────────
+
+function applySheetStatusStyling(map: maplibregl.Map, layerId: string) {
+  const fillId = mapLibreFillId(layerId);
+  if (!map.getLayer(fillId)) return;
+
+  // Farbe anhand der status-Property
+  map.setPaintProperty(fillId, "fill-color", [
+    "match",
+    ["get", "status"],
+    "offen", STATUS_COLORS["offen"],
+    "in-arbeit", STATUS_COLORS["in-arbeit"],
+    "kontrolliert", STATUS_COLORS["kontrolliert"],
+    "abgenommen", STATUS_COLORS["abgenommen"],
+    STATUS_COLORS["offen"],
+  ]);
+  map.setPaintProperty(fillId, "fill-opacity", 0.5);
+  map.setPaintProperty(fillId, "fill-outline-color", "#374151");
+
+  // Line layer (Umrandung)
+  const lineId = `layer-${layerId}-line`;
+  if (map.getLayer(lineId)) {
+    map.setPaintProperty(lineId, "line-color", "#374151");
+    map.setPaintProperty(lineId, "line-width", 1);
   }
-  activeLayerIds = [];
 }
+
+function applyMastStyling(map: maplibregl.Map, layerId: string) {
+  const circleId = mapLibreCircleId(layerId);
+  if (!map.getLayer(circleId)) return;
+
+  map.setPaintProperty(circleId, "circle-radius", [
+    "match",
+    ["get", "isPortal"],
+    true, 8,
+    6,
+  ]);
+  map.setPaintProperty(circleId, "circle-color", [
+    "case",
+    ["get", "maststandortpflege"],
+    "#10B981",
+    "#6B7280",
+  ]);
+  map.setPaintProperty(circleId, "circle-stroke-color", "#FFFFFF");
+  map.setPaintProperty(circleId, "circle-stroke-width", 1.5);
+  map.setPaintProperty(circleId, "circle-opacity", [
+    "case",
+    ["get", "maststandortpflege"],
+    1,
+    0.7,
+  ]);
+}
+
+function applyMastFilter(map: maplibregl.Map, layerId: string, onlyUnmaintained: boolean) {
+  const circleId = mapLibreCircleId(layerId);
+  if (!map.getLayer(circleId)) return;
+  if (onlyUnmaintained) {
+    map.setFilter(circleId, ["!=", ["get", "maststandortpflege"], true]);
+  } else {
+    map.setFilter(circleId, null);
+  }
+}
+
+function applySheetFilter(map: maplibregl.Map, layerId: string, showControlled: boolean) {
+  const fillId = mapLibreFillId(layerId);
+  if (!map.getLayer(fillId)) return;
+  if (!showControlled) {
+    map.setFilter(fillId, ["!=", ["get", "status"], "kontrolliert"]);
+  } else {
+    map.setFilter(fillId, null);
+  }
+}
+
+function updateAllFilters() {
+  const map = appRef?.getMap?.();
+  if (!map) return;
+  for (const [geoLibreId, reg] of layerRegistry) {
+    if (reg.type === "sheet") {
+      applySheetFilter(map, geoLibreId, ui.showControlledSheets);
+    } else if (reg.type === "mast") {
+      applyMastFilter(map, geoLibreId, ui.showMaststandortpflegeOnly);
+    }
+  }
+}
+
+function updateAllStyling() {
+  const map = appRef?.getMap?.();
+  if (!map) return;
+  for (const [geoLibreId, reg] of layerRegistry) {
+    if (reg.type === "sheet") {
+      applySheetStatusStyling(map, geoLibreId);
+    } else if (reg.type === "mast") {
+      applyMastStyling(map, geoLibreId);
+    }
+  }
+}
+
+// ── Klick-Interaktion ────────────────────────────────────────────────────────
+
+function setupClickHandlers(map: maplibregl.Map) {
+  for (const [geoLibreId, reg] of layerRegistry) {
+    if (reg.type !== "sheet") continue;
+    const fillId = mapLibreFillId(geoLibreId);
+    if (!map.getLayer(fillId)) continue;
+
+    map.on("click", fillId, (e) => {
+      if (!e.features || e.features.length === 0) return;
+      const feat = e.features[0];
+      const props = feat.properties as Record<string, unknown> | null;
+      if (!props) return;
+
+      const sheetId = String(props.sheetId ?? "");
+      const status = sheetStatus[sheetId] ?? "offen";
+      const pdfName = String(props.pdfFileName ?? "");
+      const mastCount = Number(props.mastCount ?? 0);
+
+      const statusLabel: Record<string, string> = {
+        "offen": "Offen",
+        "in-arbeit": "In Arbeit",
+        "kontrolliert": "Kontrolliert",
+        "abgenommen": "Abgenommen",
+      };
+
+      const html = `
+        <div style="font-family:system-ui;font-size:13px;max-width:280px">
+          <div style="font-weight:600;margin-bottom:4px;">${pdfName}</div>
+          <table style="width:100%;border-collapse:collapse">
+            <tr><td style="padding:2px 0;color:#6b7280">Blatt-ID</td><td style="padding:2px 0;text-align:right">${sheetId}</td></tr>
+            <tr><td style="padding:2px 0;color:#6b7280">Status</td>
+                <td style="padding:2px 0;text-align:right">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor(status as OetmSheetStatus)};margin-right:4px;"></span>
+                  ${statusLabel[status] ?? status}
+                </td></tr>
+            <tr><td style="padding:2px 0;color:#6b7280">Maste</td><td style="padding:2px 0;text-align:right">${mastCount}</td></tr>
+          </table>
+        </div>
+      `;
+
+      new MaplibrePopup({ closeButton: true, closeOnClick: false, maxWidth: "300px" })
+        .setLngLat(e.lngLat)
+        .setHTML(html)
+        .addTo(map);
+    });
+
+    map.on("mouseenter", fillId, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+
+    map.on("mouseleave", fillId, () => {
+      map.getCanvas().style.cursor = "";
+    });
+  }
+}
+
+// ── Layer-Management ─────────────────────────────────────────────────────────
 
 function createSheetLayer(lot: OetmLot) {
   const app = appRef;
   if (!app || lot.sheets.length === 0) return;
 
-  // Erzeuge GeoJSON-Polygone aus Blattschnitt-BBOX
   const features: GeoJSON.Feature<GeoJSON.Polygon>[] = [];
   for (const sheet of lot.sheets) {
     if (!sheet.bbox) continue;
@@ -120,9 +279,7 @@ function createSheetLayer(lot: OetmLot) {
       type: "Feature",
       geometry: {
         type: "Polygon",
-        coordinates: [[
-          [w, s], [e, s], [e, n], [w, n], [w, s],
-        ]],
+        coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]],
       },
       properties: {
         sheetId: sheet.sheetId,
@@ -133,7 +290,6 @@ function createSheetLayer(lot: OetmLot) {
       },
     });
   }
-
   if (features.length === 0) return;
 
   const fc: GeoJSON.FeatureCollection<GeoJSON.Polygon> = {
@@ -141,11 +297,18 @@ function createSheetLayer(lot: OetmLot) {
     features,
   };
 
-  const layerId = app.addGeoJsonLayer(
-    `ÖTM-Blattschnitte ${lot.label}`,
-    fc,
-  );
-  activeLayerIds.push(layerId);
+  const geoLibreId = app.addGeoJsonLayer(`ÖTM-Blattschnitte ${lot.label}`, fc);
+  layerRegistry.set(geoLibreId, { type: "sheet", lotNumber: lot.lotNumber });
+
+  // Styling auf die Map anwenden (sobald Layouterstellung abgeschlossen)
+  const map = app.getMap?.();
+  if (map) {
+    // setTimeout 0 damit MapLibre den Layer fertig registriert hat
+    setTimeout(() => {
+      applySheetStatusStyling(map, geoLibreId);
+      applySheetFilter(map, geoLibreId, ui.showControlledSheets);
+    }, 0);
+  }
 }
 
 function createMastLayer(lot: OetmLot) {
@@ -153,45 +316,53 @@ function createMastLayer(lot: OetmLot) {
   if (!app || lot.masts.length === 0) return;
 
   const fc = mastsToGeoJson(lot.masts);
+  const geoLibreId = app.addGeoJsonLayer(`ÖTM-Strommasten ${lot.label}`, fc);
+  layerRegistry.set(geoLibreId, { type: "mast", lotNumber: lot.lotNumber });
 
-  const layerId = app.addGeoJsonLayer(
-    `ÖTM-Strommasten ${lot.label}`,
-    fc,
-  );
-  activeLayerIds.push(layerId);
+  const map = app.getMap?.();
+  if (map) {
+    setTimeout(() => {
+      applyMastStyling(map, geoLibreId);
+      applyMastFilter(map, geoLibreId, ui.showMaststandortpflegeOnly);
+    }, 0);
+  }
 }
 
 function fitMapToLot(lot: OetmLot) {
   const app = appRef;
   if (!app) return;
-
-  // Berechne Gesamt-BBOX über alle Maste
   const allCoords = lot.masts.map((m) => m.coordinates).filter((c) => c[0] !== 0 && c[1] !== 0);
   if (allCoords.length === 0) return;
-
   const lngs = allCoords.map((c) => c[0]);
   const lats = allCoords.map((c) => c[1]);
   const bounds: [number, number, number, number] = [
     Math.min(...lngs), Math.min(...lats),
     Math.max(...lngs), Math.max(...lats),
   ];
-
-  // Etwas Padding
   const padLng = (bounds[2] - bounds[0]) * 0.1 || 0.01;
   const padLat = (bounds[3] - bounds[1]) * 0.1 || 0.01;
   bounds[0] -= padLng;
   bounds[1] -= padLat;
   bounds[2] += padLng;
   bounds[3] += padLat;
-
   app.fitBounds?.(bounds);
 }
 
+function removeAllLayers() {
+  // GeoLibre verwaltet Layer intern — wir können sie nicht einfach entfernen.
+  // Stattdessen leeren wir das Registry und setzen es beim nächsten Laden neu.
+  layerRegistry.clear();
+}
+
 function ensureLotLayers(lot: OetmLot) {
-  removeOldLayers();
+  removeAllLayers();
   createSheetLayer(lot);
   createMastLayer(lot);
   fitMapToLot(lot);
+  const map = appRef?.getMap?.();
+  if (map) {
+    setTimeout(() => setupClickHandlers(map), 50);
+  }
 }
 
 // ── Los-Lade-Flow ────────────────────────────────────────────────────────────
@@ -200,8 +371,6 @@ async function handleLoadLot() {
   const app = appRef;
   if (!app) return;
 
-  // Erstelle versteckte File-Inputs für den Datei-Dialog
-  // (funktioniert in Web und Tauri gleichermaßen)
   const pickFile = (accept: string): Promise<File | null> => {
     return new Promise((resolve) => {
       const input = document.createElement("input");
@@ -223,74 +392,41 @@ async function handleLoadLot() {
   };
 
   try {
-    // Schritt 1: Mengengerüst-Excel
-    const mengengeruestFile = await pickFile(".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    const mengengeruestFile = await pickFile(".xlsx,.xls");
     if (!mengengeruestFile) return;
-
     const mengengeruestData = await readFileAsArrayBuffer(mengengeruestFile);
-    console.log("[ÖTM] Mengengerüst geladen:", mengengeruestFile.name);
 
-    // Schritt 2: Lot-Nummer + Name aus Dateinamen extrahieren
-    // Erwartetes Format: "Mengengerüst_2006_Köln.xlsx" oder "Mengengeruest_2006_Köln.xlsx"
     const fileNameMatch = mengengeruestFile.name.match(/Mengengerüst_(\d{4})_(.+)\.xlsx/i);
     let lotNumber = fileNameMatch ? fileNameMatch[1] : "";
     let lotName = fileNameMatch ? fileNameMatch[2] : "";
-
-    // Wenn Regex nicht matched, nach Los-Info fragen (TODO: UI-Dialog)
     if (!lotNumber) {
-      alert("Bitte Los-Nummer und -Namen aus dem Dateinamen ableiten: " + mengengeruestFile.name);
+      alert("Los-Nummer nicht aus Dateinamen ableitbar: " + mengengeruestFile.name);
       return;
     }
 
-    // Schritt 3: Log-Datei
     const logFile = await pickFile(".log,.txt");
     let logText: string | null = null;
-    if (logFile) {
-      logText = await readFileAsText(logFile);
-      console.log("[ÖTM] Log geladen:", logFile.name);
-    }
+    if (logFile) logText = await readFileAsText(logFile);
 
-    // Schritt 4: PDF-Dateien (Pläne-Ordner)
-    const pdfFiles = await pickFiles(".pdf,application/pdf");
+    const pdfFiles = await pickFiles(".pdf");
     let pdfFileNames: string[] = [];
     if (pdfFiles) {
       pdfFileNames = Array.from(pdfFiles).map((f) => f.name).filter((n) => /^ÖTM-/i.test(n));
-      console.log("[ÖTM] PDFs gefunden:", pdfFileNames.length);
     }
 
-    // Schritt 5: Los laden
-    const lot = loadLot(
-      lotNumber,
-      lotName,
-      "2026-27",
-      "westnetz",
-      mengengeruestData,
-      logText,
-      pdfFileNames,
-    );
-
-    // Schritt 6: Speichere Los im Plugin-State
+    const lot = loadLot(lotNumber, lotName, "2026-27", "westnetz", mengengeruestData, logText, pdfFileNames);
     lots[lot.lotNumber] = lot;
     activeLotNumber = lot.lotNumber;
-
-    // Initialisiere Blattschnitt-Status
     for (const sheet of lot.sheets) {
-      if (!(sheet.sheetId in sheetStatus)) {
-        sheetStatus[sheet.sheetId] = "offen";
-      }
+      if (!(sheet.sheetId in sheetStatus)) sheetStatus[sheet.sheetId] = "offen";
     }
 
-    // Schritt 7: Kartenlayer erzeugen
     ensureLotLayers(lot);
-
-    // Schritt 8: Panel neu rendern
     reRenderWorkbench();
-
-    console.log(`[ÖTM] Los ${lot.label} geladen: ${lot.sheets.length} Blattschnitte, ${lot.masts.length} Maste`);
-
+    console.log(`[ÖTM] Los ${lot.label} geladen: ${lot.sheets.length} Blätter, ${lot.masts.length} Maste`);
   } catch (err) {
-    console.error("[ÖTM] Fehler beim Los laden:", err);
-    alert("Fehler beim Laden des Loses: " + (err as Error).message);
+    console.error("[ÖTM] Fehler:", err);
+    alert("Fehler: " + (err as Error).message);
   }
 }
 
@@ -319,37 +455,63 @@ function pickFiles(accept: string): Promise<FileList | null> {
 
 function setSheetStatus(sheetId: string, status: OetmSheetStatus) {
   sheetStatus[sheetId] = status;
+  // GeoJSON-Properties updaten via MapLibre
+  const map = appRef?.getMap?.();
+  if (map) {
+    for (const [geoLibreId, reg] of layerRegistry) {
+      if (reg.type !== "sheet") continue;
+      const sourceId = `source-${geoLibreId}`;
+      const source = map.getSource(sourceId) as GeoJSONSource | undefined;
+      if (source) {
+        // GeoJSONSource has setData() — update the in-memory geojson
+        const currentData = (source as unknown as { _data?: GeoJSON.FeatureCollection })._data;
+        if (currentData) {
+          for (const feat of currentData.features) {
+            if (feat.properties?.sheetId === sheetId) {
+              feat.properties.status = status;
+            }
+          }
+          source.setData(currentData);
+        }
+      }
+      applySheetStatusStyling(map, geoLibreId);
+      applySheetFilter(map, geoLibreId, ui.showControlledSheets);
+    }
+  }
   reRenderWorkbench();
 }
 
-function getLotSheets(): { sheetId: string; pdfFileName: string; status: OetmSheetStatus; mastCount: number }[] {
-  if (!activeLotNumber || !lots[activeLotNumber]) return [];
-  return lots[activeLotNumber].sheets.map((s) => ({
-    sheetId: s.sheetId,
-    pdfFileName: s.pdfFileName,
-    status: sheetStatus[s.sheetId] ?? "offen",
-    mastCount: s.mastCount,
-  }));
+function batchSetStatus(status: OetmSheetStatus) {
+  if (!activeLotNumber || !lots[activeLotNumber]) return;
+  for (const sheet of lots[activeLotNumber].sheets) {
+    sheetStatus[sheet.sheetId] = status;
+  }
+  // Komplett-Neuaufbau der Layer
+  ensureLotLayers(lots[activeLotNumber]);
+  reRenderWorkbench();
+}
+
+function toggleMastFilter() {
+  ui.showMaststandortpflegeOnly = !ui.showMaststandortpflegeOnly;
+  updateAllFilters();
+  reRenderWorkbench();
+}
+
+function toggleSheetFilter() {
+  ui.showControlledSheets = !ui.showControlledSheets;
+  updateAllFilters();
+  reRenderWorkbench();
 }
 
 // ── Panel-Rendering ──────────────────────────────────────────────────────────
 
 function reRenderWorkbench() {
-  // Da render nur einmal aufgerufen wird, parsen wir neu.
-  // Der Container bleibt gemountet — wir updaten den DOM direkt.
-  // TODO: saubereres Re-Rendering via Event-Bus
-
-  // Since we can't easily re-trigger render, we find the container by id.
-  const containerId = `oetm-panel-content`;
-  const existing = document.getElementById(containerId);
+  const existing = document.getElementById("oetm-panel-content");
   if (existing) {
     existing.innerHTML = "";
     buildWorkbenchDOM(existing);
   }
 }
-
-// Globaler Container-Ref für DOM-Updates
-let workbenchContainer: HTMLElement | null = null;
 
 function buildWorkbenchDOM(container: HTMLElement) {
   const wrapper = document.createElement("div");
@@ -367,11 +529,8 @@ function buildWorkbenchDOM(container: HTMLElement) {
   wrapper.appendChild(title);
 
   // Los laden Button
-  const loadSection = document.createElement("div");
-  loadSection.style.marginBottom = "16px";
-
   const loadBtn = document.createElement("button");
-  loadBtn.textContent = "Los laden";
+  loadBtn.textContent = Object.keys(lots).length === 0 ? "Los laden" : "Weiteres Los laden";
   loadBtn.style.padding = "8px 16px";
   loadBtn.style.backgroundColor = "var(--color-primary, #2563eb)";
   loadBtn.style.color = "#fff";
@@ -380,10 +539,59 @@ function buildWorkbenchDOM(container: HTMLElement) {
   loadBtn.style.cursor = "pointer";
   loadBtn.style.fontSize = "14px";
   loadBtn.style.width = "100%";
+  loadBtn.style.marginBottom = "16px";
   loadBtn.onclick = () => handleLoadLot();
-  loadSection.appendChild(loadBtn);
+  wrapper.appendChild(loadBtn);
 
-  wrapper.appendChild(loadSection);
+  // Filter-Sektion
+  if (activeLotNumber && lots[activeLotNumber]) {
+    const filterSection = document.createElement("div");
+    filterSection.style.marginBottom = "16px";
+    filterSection.style.padding = "8px 12px";
+    filterSection.style.backgroundColor = "var(--color-surface, #f9fafb)";
+    filterSection.style.borderRadius = "6px";
+
+    const filterTitle = document.createElement("div");
+    filterTitle.textContent = "Filter";
+    filterTitle.style.fontWeight = "500";
+    filterTitle.style.marginBottom = "8px";
+    filterSection.appendChild(filterTitle);
+
+    // Checkbox: Kontrollierte ausblenden
+    const hideControlled = document.createElement("label");
+    hideControlled.style.display = "flex";
+    hideControlled.style.alignItems = "center";
+    hideControlled.style.gap = "6px";
+    hideControlled.style.marginBottom = "4px";
+    hideControlled.style.fontSize = "12px";
+    hideControlled.style.cursor = "pointer";
+
+    const hideCheckbox = document.createElement("input");
+    hideCheckbox.type = "checkbox";
+    hideCheckbox.checked = !ui.showControlledSheets;
+    hideCheckbox.onchange = () => toggleSheetFilter();
+    hideControlled.appendChild(hideCheckbox);
+    hideControlled.appendChild(document.createTextNode("Kontrollierte ausblenden"));
+    filterSection.appendChild(hideControlled);
+
+    // Checkbox: Nur Maste ohne Standortpflege
+    const onlyUnmaintained = document.createElement("label");
+    onlyUnmaintained.style.display = "flex";
+    onlyUnmaintained.style.alignItems = "center";
+    onlyUnmaintained.style.gap = "6px";
+    onlyUnmaintained.style.fontSize = "12px";
+    onlyUnmaintained.style.cursor = "pointer";
+
+    const mastCheckbox = document.createElement("input");
+    mastCheckbox.type = "checkbox";
+    mastCheckbox.checked = ui.showMaststandortpflegeOnly;
+    mastCheckbox.onchange = () => toggleMastFilter();
+    onlyUnmaintained.appendChild(mastCheckbox);
+    onlyUnmaintained.appendChild(document.createTextNode("Nur Maste ohne Standortpflege"));
+    filterSection.appendChild(onlyUnmaintained);
+
+    wrapper.appendChild(filterSection);
+  }
 
   // Status: Geladene Lose
   const lotSection = document.createElement("div");
@@ -398,61 +606,104 @@ function buildWorkbenchDOM(container: HTMLElement) {
   if (activeLotNumber && lots[activeLotNumber]) {
     const lot = lots[activeLotNumber];
     const lotInfo = document.createElement("div");
-    lotInfo.textContent = `Aktiv: ${lot.label} (${lot.sheets.length} Blattschnitte, ${lot.masts.length} Maste)`;
+    lotInfo.textContent = `Aktiv: ${lot.label}  (${lot.sheets.length} Blätter · ${lot.masts.length} Maste)`;
     lotInfo.style.color = "var(--color-text-muted, #6b7280)";
+    lotInfo.style.fontSize = "12px";
     lotSection.appendChild(lotInfo);
   }
-
   wrapper.appendChild(lotSection);
 
-  // Status: Blattschnitte
+  // Blattschnitt-Liste
   const sheetSection = document.createElement("div");
   sheetSection.style.marginBottom = "16px";
+
+  const sheetHeader = document.createElement("div");
+  sheetHeader.style.display = "flex";
+  sheetHeader.style.justifyContent = "space-between";
+  sheetHeader.style.alignItems = "center";
+  sheetHeader.style.marginBottom = "8px";
 
   const sheetLabel = document.createElement("div");
   const totalSheets = Object.keys(sheetStatus).length;
   const controlled = Object.values(sheetStatus).filter((s) => s === "kontrolliert" || s === "abgenommen").length;
-  sheetLabel.textContent = `Blattschnitte: ${controlled}/${totalSheets} kontrolliert`;
+  sheetLabel.textContent = `Blattschnitte: ${controlled}/${totalSheets}`;
   sheetLabel.style.fontWeight = "500";
-  sheetLabel.style.marginBottom = "8px";
-  sheetSection.appendChild(sheetLabel);
+  sheetHeader.appendChild(sheetLabel);
 
-  // Blattschnitt-Liste (scrollbar)
+  // Batch-Button
+  const batchBtn = document.createElement("button");
+  batchBtn.textContent = "Alle auf kontrolliert";
+  batchBtn.style.fontSize = "11px";
+  batchBtn.style.padding = "3px 8px";
+  batchBtn.style.borderRadius = "4px";
+  batchBtn.style.border = "1px solid var(--color-border, #d1d5db)";
+  batchBtn.style.backgroundColor = "transparent";
+  batchBtn.style.cursor = "pointer";
+  batchBtn.onclick = () => batchSetStatus("kontrolliert");
+  sheetHeader.appendChild(batchBtn);
+
+  sheetSection.appendChild(sheetHeader);
+
   if (activeLotNumber && lots[activeLotNumber]) {
     const sheetList = document.createElement("div");
-    sheetList.style.maxHeight = "200px";
+    sheetList.style.maxHeight = "250px";
     sheetList.style.overflowY = "auto";
     sheetList.style.fontSize = "12px";
+    sheetList.style.border = "1px solid var(--color-border, #e5e7eb)";
+    sheetList.style.borderRadius = "4px";
 
     for (const s of lots[activeLotNumber].sheets) {
       const row = document.createElement("div");
+      const currentStatus = sheetStatus[s.sheetId] ?? "offen";
       row.style.display = "flex";
       row.style.alignItems = "center";
       row.style.justifyContent = "space-between";
-      row.style.padding = "4px 0";
+      row.style.padding = "5px 8px";
       row.style.borderBottom = "1px solid var(--color-border, #e5e7eb)";
+      row.style.backgroundColor = currentStatus === "kontrolliert" || currentStatus === "abgenommen"
+        ? "rgba(16, 185, 129, 0.05)" : "transparent";
+
+      // Status-Dot + Name
+      const nameWrapper = document.createElement("div");
+      nameWrapper.style.display = "flex";
+      nameWrapper.style.alignItems = "center";
+      nameWrapper.style.gap = "6px";
+      nameWrapper.style.flex = "1";
+      nameWrapper.style.overflow = "hidden";
+
+      const dot = document.createElement("span");
+      dot.style.display = "inline-block";
+      dot.style.width = "8px";
+      dot.style.height = "8px";
+      dot.style.borderRadius = "50%";
+      dot.style.backgroundColor = statusColor(currentStatus);
+      dot.style.flexShrink = "0";
+      nameWrapper.appendChild(dot);
 
       const name = document.createElement("span");
       name.textContent = s.pdfFileName;
-      name.style.flex = "1";
       name.style.overflow = "hidden";
       name.style.textOverflow = "ellipsis";
       name.style.whiteSpace = "nowrap";
-      row.appendChild(name);
+      nameWrapper.appendChild(name);
+      row.appendChild(nameWrapper);
 
+      // Status-Dropdown
       const statusSelect = document.createElement("select");
+      statusSelect.style.fontSize = "11px";
+      statusSelect.style.padding = "2px 4px";
+      statusSelect.style.borderRadius = "4px";
+      statusSelect.style.border = "1px solid var(--color-border, #d1d5db)";
+      statusSelect.style.flexShrink = "0";
+
       const statuses: OetmSheetStatus[] = ["offen", "in-arbeit", "kontrolliert", "abgenommen"];
       for (const st of statuses) {
         const opt = document.createElement("option");
         opt.value = st;
         opt.textContent = st;
-        if (st === (sheetStatus[s.sheetId] ?? "offen")) opt.selected = true;
+        if (st === currentStatus) opt.selected = true;
         statusSelect.appendChild(opt);
       }
-      statusSelect.style.fontSize = "11px";
-      statusSelect.style.padding = "2px 4px";
-      statusSelect.style.borderRadius = "4px";
-      statusSelect.style.border = "1px solid var(--color-border, #d1d5db)";
       statusSelect.onchange = () => setSheetStatus(s.sheetId, statusSelect.value as OetmSheetStatus);
       row.appendChild(statusSelect);
 
@@ -460,7 +711,6 @@ function buildWorkbenchDOM(container: HTMLElement) {
     }
     sheetSection.appendChild(sheetList);
   }
-
   wrapper.appendChild(sheetSection);
 
   // Maste-Info
@@ -474,35 +724,35 @@ function buildWorkbenchDOM(container: HTMLElement) {
     mastLabel.textContent = `Maste: ${pflegeMasts}/${totalMasts} mit Standortpflege`;
     mastLabel.style.fontWeight = "500";
     mastSection.appendChild(mastLabel);
-  }
 
+    const portalMasts = lots[activeLotNumber].masts.filter((m) => m.isPortal).length;
+    if (portalMasts > 0) {
+      const portalInfo = document.createElement("div");
+      portalInfo.textContent = `davon ${portalMasts} Portalmasten (größere Symbole)`;
+      portalInfo.style.fontSize = "12px";
+      portalInfo.style.color = "var(--color-text-muted, #6b7280)";
+      mastSection.appendChild(portalInfo);
+    }
+  }
   wrapper.appendChild(mastSection);
 
-  // Status: Maßnahmen
+  // Maßnahmen
   const measureSection = document.createElement("div");
   measureSection.style.marginBottom = "16px";
-
   const measureLabel = document.createElement("div");
-  measureLabel.textContent = `Erfasste Maßnahmen: ${measures.length}`;
+  measureLabel.textContent = `Maßnahmen: ${measures.length}`;
   measureLabel.style.fontWeight = "500";
   measureSection.appendChild(measureLabel);
-
   wrapper.appendChild(measureSection);
 
   container.appendChild(wrapper);
 }
 
-// ── Panel-Rendering (Einstieg) ────────────────────────────────────────────────
-
 function renderWorkbench(container: HTMLElement): () => void {
   container.innerHTML = "";
   container.id = "oetm-panel-content";
-  workbenchContainer = container;
   buildWorkbenchDOM(container);
-
-  return () => {
-    workbenchContainer = null;
-  };
+  return () => {};
 }
 
 // ── Toolbar-Menu ─────────────────────────────────────────────────────────────
@@ -515,32 +765,23 @@ function buildToolbarMenu(): GeoLibreToolbarMenu {
       {
         id: "load-lot",
         label: "Los laden",
-        onSelect: () => {
-          handleLoadLot();
-        },
+        onSelect: () => handleLoadLot(),
       },
       {
         id: "status-overview",
         label: "Statusübersicht",
-        onSelect: () => {
-          appRef?.openRightPanel?.(PANEL_ID);
-        },
+        onSelect: () => appRef?.openRightPanel?.(PANEL_ID),
       },
       {
         id: "toggle-masts",
-        label: "Masten einblenden",
-        onSelect: () => {
-          ui.showMaststandortpflegeOnly = !ui.showMaststandortpflegeOnly;
-          console.log("[ÖTM] showMaststandortpflegeOnly =", ui.showMaststandortpflegeOnly);
-        },
+        label: "Masten-Filter",
+        onSelect: () => toggleMastFilter(),
       },
       { type: "separator" as const },
       {
         id: "export",
         label: "Export",
-        onSelect: () => {
-          console.log("[ÖTM] Export angefordert");
-        },
+        onSelect: () => console.log("[ÖTM] Export angefordert"),
       },
     ],
   };
@@ -556,9 +797,7 @@ export const maplibreOetmPlugin: GeoLibrePlugin = {
 
   activate(app: GeoLibreAppAPI) {
     appRef = app;
-
     unregisterMenu = app.registerToolbarMenu?.(buildToolbarMenu()) ?? null;
-
     unregisterPanel =
       app.registerRightPanel?.({
         id: PANEL_ID,
@@ -566,14 +805,7 @@ export const maplibreOetmPlugin: GeoLibrePlugin = {
         dock: "replace-style",
         defaultWidth: 380,
         render: (container) => renderWorkbench(container),
-        onOpen: () => {
-          console.log("[ÖTM] Workbench geöffnet");
-        },
-        onClose: () => {
-          console.log("[ÖTM] Workbench geschlossen");
-        },
       }) ?? null;
-
     app.openRightPanel?.(PANEL_ID);
   },
 

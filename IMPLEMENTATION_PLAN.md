@@ -119,8 +119,8 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 | 1.2.1 | Blattschnitt-Geometrie bestimmen | **Ansatz A:** Mast-BBOX aus `loadLot()` → `sheet.bbox`. Ansatz B (Sidecar) später | ✅ erledigt |
 | 1.2.2 | GeoJSON-Layer erzeugen | `createSheetLayer()` → `app.addGeoJsonLayer("ÖTM-Blattschnitte", featureCollection)` mit Polygonen | ✅ erledigt |
 | 1.2.3 | Blattschnitt-ID-Schema | `{lotNumber}-{sheetNumber}` (z. B. `2006-0001`) | ✅ erledigt |
-| 1.2.4 | Layer-Styling nach Status | Properties enthalten `status`; Styling via `LayerStyle.categorized` in GeoLibre | ⚠️ Styling-UI in GeoLibre konfigurierbar |
-| 1.2.5 | Klick-Interaktion | Status-Dropdown im Right-Panel implementiert | 📋 Nächstes: Infofenster bei Klick auf Karte |
+| 1.2.4 | Layer-Styling nach Status | `applySheetStatusStyling()`: fill-color via Match-Expression. Farben: offen=grau, in-arbeit=orange, kontrolliert=grün, abgenommen=blau. Füll- und Linien-Layer. | ✅ erledigt |
+| 1.2.5 | Klick-Interaktion | `setupClickHandlers()` → MapLibre Click-Event auf fill-Layer → Popup mit Blatt-ID, Status-Dot, PDF-Name, Mast-Anzahl. Cursor auf hover auf Pointer. | ✅ erledigt |
 | 1.2.6 | Fit-Bounds | `fitMapToLot()` mit 10% Padding | ✅ erledigt |
 
 ### Meilenstein 1.3: Mast-Layer
@@ -129,19 +129,19 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 |---|-------------|---------|--------|
 | 1.3.1 | Mast-GeoJSON | `mastsToGeoJson()` in `oetm-parser.ts` | ✅ erledigt |
 | 1.3.2 | Layer anlegen | `createMastLayer()` → `app.addGeoJsonLayer("ÖTM-Strommasten", fc)` | ✅ erledigt |
-| 1.3.3 | Maststandortpflege-Farbcodierung | Property `maststandortpflege` im GeoJSON; Farbcodierung über Maplibre-Style | ⚠️ Styling-UI ausstehend |
-| 1.3.4 | Mast-Symbole | Kreis-Marker via GeoLibre-Standard | 📋 Portalmast-Symbol individuell |
-| 1.3.5 | Mast↔Blatt-Verknüpfung | Daten-Modell bereit (`mast.sheetIds`, `sheet.mastIds`) | 📋 Interaktion ausstehend |
-| 1.3.6 | Filterung | Checkbox "Nur Maste ohne Standortpflege" als UI-Element | 📋 Layer-Filter ausstehend |
+| 1.3.3 | Maststandortpflege-Farbcodierung | `applyMastStyling()`: circle-color via Case-Expression — grün=true, grau=false | ✅ erledigt |
+| 1.3.4 | Mast-Symbole | `applyMastStyling()`: Portalmasten (isPortal) mit Radius 8px, normale Maste 6px. Weißer Stroke 1.5px. | ✅ erledigt |
+| 1.3.5 | Mast↔Blatt-Verknüpfung | Daten-Modell bereit (`mast.sheetIds`, `sheet.mastIds`); Maste pro Blatt im Popup sichtbar | ✅ erledigt |
+| 1.3.6 | Filterung | `applyMastFilter()` → MapLibre setFilter auf circle-Layer. Checkbox "Nur Maste ohne Standortpflege" im Right-Panel. | ✅ erledigt |
 
 ### Meilenstein 1.4: Statusmanagement
 
 | # | Teilschritt | Details | Status |
 |---|-------------|---------|--------|
-| 1.4.1 | Status-Store | `sheetStatus`-Record im Plugin-State, serialisiert via `getProjectState`/`applyProjectState` | ✅ erledigt |
-| 1.4.2 | Status-UI im Right-Panel | Scrollbare Blattschnitt-Liste mit Status-Dropdown pro Blatt, Fortschrittszähler `{controlled}/{total}` | ✅ erledigt |
-| 1.4.3 | Batch-Statusänderung | Noch nicht implementiert | 📋 |
-| 1.4.4 | Filter | Noch nicht mit Layer-Filter verbunden | 📋 |
+| 1.4.1 | Status-Store | `sheetStatus`-Record, serialisiert via `getProjectState`/`applyProjectState` | ✅ erledigt |
+| 1.4.2 | Status-UI im Right-Panel | Scrollbare Blattschnitt-Liste mit Status-Dropdown + Farb-Dot pro Blatt. Zeilenhintergrund grünlich bei kontrolliert. | ✅ erledigt |
+| 1.4.3 | Batch-Statusänderung | Button "Alle auf kontrolliert" im Panel-Header: `batchSetStatus("kontrolliert")` | ✅ erledigt |
+| 1.4.4 | Filter | Checkbox "Kontrollierte ausblenden" → `applySheetFilter()` → MapLibre setFilter + Panel-Update | ✅ erledigt |
 | 1.4.5 | Persistenz | `buildPluginState()` + `restorePluginState()` serialisieren `sheetStatus` → `.geolibre.json` | ✅ erledigt |
 
 ### Meilenstein 1.5: Excel-Integration (Mengengerüst)
@@ -338,7 +338,7 @@ Der Plan gliedert sich in **7 Phasen** über drei MVP-/Release-Stufen (MVP → P
 | Phase | Inhalt | Geschätzte Arbeitstage | Status |
 |-------|--------|------------------------|--------|
 | 0 | Vorbereitung & Infrastruktur | 5–7 (verbleibend: ~0,5–2,5) | 🟢 75% — 0.1 ✅, 0.2/0.3 ✅, 0.4 ✅ (außer 0.4.4) |
-| 1 | MVP: Blattschnitte & Masten | 8–12 (verbleibend: ~5–9) | 🟡 30% — 1.1 ✅, 1.2 ✅, 1.3 ⚠️, 1.4 ✅ |
+| 1 | MVP: Blattschnitte & Masten | 8–12 (verbleibend: ~1–3) | 🟢 85% — 1.1 ✅, 1.2 ✅, 1.3 ✅, 1.4 ✅ |
 | 2 | Direkte Markierung & Maßnahmen (inkl. PDF-Import) | 6–10 | 🔲 offen |
 | 3 | Auf-Abnahmeformular & Export | 5–8 | 🔲 offen |
 | 4 | Optimierung & Erweiterung (PDF-Viewer, Georeferenzierung, Multi-Los) | 4–6 | 🔲 offen |
