@@ -801,6 +801,46 @@ export function createAppAPI(
           }),
         ));
     })(),
+    // Hand external plugins GeoLibre's own maplibre-gl-raster module so they
+    // render COGs on the host's single deck.gl/luma.gl instance. A bundled
+    // second copy throws on luma.gl's "already initialized" guard. Memoized so
+    // repeated calls reuse one resolved module.
+    getMaplibreGlRaster: (() => {
+      let cached: Promise<typeof import("maplibre-gl-raster")> | undefined;
+      return () =>
+        (cached ??= import("maplibre-gl-raster").catch((error) => {
+          // Don't memoize a rejection: a transient chunk-load failure would
+          // otherwise poison getMaplibreGlRaster() for the whole session.
+          cached = undefined;
+          throw error;
+        }));
+    })(),
+    // Set the persisted projection preference so the host's projection
+    // enforcement keeps it (a raw map.setProjection is reverted on idle).
+    // deck.gl-backed plugins need mercator; globe breaks deck tile traversal.
+    setMapProjection: (projection: "globe" | "mercator") => {
+      // External plugins call through a JS boundary where TypeScript can't
+      // enforce the union, so reject anything else. An invalid value would be
+      // persisted and make enforceProjection throw and reschedule on every idle
+      // forever.
+      if (projection !== "globe" && projection !== "mercator") {
+        console.warn(
+          `[GeoLibre] setMapProjection: ignoring unknown projection "${String(projection)}" (expected "globe" or "mercator").`,
+        );
+        return;
+      }
+      const store = useAppStore.getState();
+      const { map } = store.preferences;
+      if (map.projection === projection) return;
+      store.setPreferences({
+        ...store.preferences,
+        map: { ...map, projection },
+      });
+    },
+    getMapProjection: () =>
+      // Legacy projects may not carry a projection preference; default to globe
+      // like MapController.enforceProjection so the declared return type holds.
+      useAppStore.getState().preferences.map.projection ?? "globe",
     registerRightPanel,
     unregisterRightPanel,
     openRightPanel,
