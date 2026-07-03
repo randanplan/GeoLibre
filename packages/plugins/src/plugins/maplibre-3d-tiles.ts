@@ -20,7 +20,17 @@ import type {
   GeoLibreDeckGL,
   GeoLibreMapControlPosition,
 } from "../types";
-import { ensureMercatorProjection } from "./map-projection-utils";
+import {
+  acquireMercatorProjectionLock,
+  releaseMercatorProjectionLock,
+} from "./map-projection-utils";
+import {
+  addArcgisI3sTilesLayer,
+  arcgisI3sSceneLayerName,
+  isArcgisI3sSceneLayerUrl,
+  restoreArcgisI3sTilesLayers,
+  THREE_D_TILES_TILESET_LOAD_LIMITS,
+} from "./arcgis-i3s-tiles";
 
 const threeDTilesControlPosition: GeoLibreMapControlPosition = "top-left";
 const THREE_D_TILES_LAYER_ID = "geolibre-3d-tiles";
@@ -34,6 +44,9 @@ const GOOGLE_PHOTOREALISTIC_TILES_URL =
   "https://tile.googleapis.com/v1/3dtiles/root.json";
 const GOOGLE_PHOTOREALISTIC_TILES_LABEL =
   "Google Photorealistic 3D Tiles";
+const ARCGIS_I3S_SAMPLE_TILES_URL =
+  "https://tiles.arcgis.com/tiles/z2tnIkrLQ2BRzr6P/arcgis/rest/services/SanFrancisco_Bldgs/SceneServer/layers/0";
+const ARCGIS_I3S_SAMPLE_TILES_LABEL = "San Francisco Buildings (ArcGIS I3S)";
 const GOOGLE_MAPS_API_KEY_HEADER = "X-GOOG-API-KEY";
 const GOOGLE_MAPS_API_KEY_MASK = "********";
 const GOOGLE_PHOTOREALISTIC_SOURCE_KIND =
@@ -62,6 +75,10 @@ const THREE_D_TILES_OPTIONS = {
       label: GOOGLE_PHOTOREALISTIC_TILES_LABEL,
       url: GOOGLE_PHOTOREALISTIC_TILES_URL,
     },
+    {
+      label: ARCGIS_I3S_SAMPLE_TILES_LABEL,
+      url: ARCGIS_I3S_SAMPLE_TILES_URL,
+    },
   ],
 } satisfies ThreeDTilesControlOptions;
 
@@ -85,7 +102,8 @@ let googleTilesMountRetries = 0;
 // Latches once the bounded mount retry gives up, so the warning logs once
 // rather than on every subsequent store-driven render.
 let googleTilesMountGaveUp = false;
-let googleTilesPreviousProjection: "globe" | "mercator" | null = null;
+/** Ref-counted mercator lock key for this overlay (see map-projection-utils). */
+const GOOGLE_PROJECTION_LOCK_KEY = "google-photorealistic";
 let googleAltitudeOffsetTile3DLayerClass: DeckTile3DLayerClass | null = null;
 // Runtime-env listener owned by the Google overlay lifecycle, so a project with
 // only Google layers (which never creates the native ThreeDTilesControl) still
@@ -137,6 +155,7 @@ export function closeThreeDTilesLayerPanel(app: GeoLibreAppAPI): void {
 
 export function restoreThreeDTilesLayers(app: GeoLibreAppAPI): void {
   restoreGooglePhotorealisticTilesLayers(app);
+  restoreArcgisI3sTilesLayers(app);
 
   const layers = useAppStore
     .getState()
@@ -591,6 +610,7 @@ function installThreeDTilesPanelHandlers(
     if (control) {
       installGooglePhotorealisticTilesPanelHandlers(control, panel);
       updateGooglePhotorealisticTilesPanelList(control);
+      installArcgisI3sTilesPanelHandlers(control, panel);
     }
   }
   installThreeDTilesToggleHandler(control);
@@ -892,6 +912,75 @@ async function addGooglePhotorealisticTilesFromPanel(
   updateGooglePhotorealisticTilesPanelList(control);
 }
 
+/**
+ * Intercept the 3D Tiles panel submit for ArcGIS I3S Scene Layer URLs and route
+ * them to the deck.gl I3S overlay, since maplibre-gl-3d-tiles' three.js renderer
+ * only handles OGC 3D Tiles. Mirrors the Google Photorealistic interception.
+ */
+function installArcgisI3sTilesPanelHandlers(
+  control: ThreeDTilesControl,
+  panel: HTMLElement,
+): void {
+  if (panel.dataset.geolibreI3sTilesHandler === "true") return;
+  panel.dataset.geolibreI3sTilesHandler = "true";
+
+  const urlInput = getThreeDTilesUrlInput(panel);
+  // Capture on the panel (an ancestor of the form) so this runs before
+  // maplibre-gl-3d-tiles' own submit listener — see the Google handler above.
+  panel.addEventListener(
+    "submit",
+    (event) => {
+      if (
+        !(event.target instanceof HTMLElement) ||
+        !event.target.classList.contains("three-d-tiles-form")
+      ) {
+        return;
+      }
+      if (!isArcgisI3sSceneLayerUrl(urlInput?.value ?? "")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      addArcgisI3sTilesFromPanel(control, panel);
+    },
+    { capture: true },
+  );
+}
+
+function addArcgisI3sTilesFromPanel(
+  control: ThreeDTilesControl,
+  panel: HTMLElement,
+): void {
+  const app = activeThreeDTilesApp;
+  if (!app) {
+    console.warn(
+      "[GeoLibre] ArcGIS I3S submit ignored: no active 3D Tiles app",
+    );
+    return;
+  }
+  const url = getThreeDTilesUrlInput(panel)?.value.trim();
+  if (!url) {
+    console.warn("[GeoLibre] ArcGIS I3S submit ignored: empty URL");
+    return;
+  }
+
+  const name =
+    panel
+      .querySelector<HTMLInputElement>('input[aria-label="Layer name"]')
+      ?.value.trim() ||
+    arcgisI3sSceneLayerName(url) ||
+    layerNameFromUrl(url, "ArcGIS I3S Scene Layer");
+  const flyTo =
+    panel.querySelector<HTMLInputElement>(
+      'input[aria-label="Fly to tileset after load"]',
+    )?.checked ?? true;
+  const visible =
+    panel.querySelector<HTMLInputElement>('input[aria-label="Visible on load"]')
+      ?.checked ?? true;
+  const opacity = numberValue(control.getState().opacity, 1);
+
+  addArcgisI3sTilesLayer(app, { url, name, opacity, visible, flyTo });
+  control.collapse();
+}
+
 function restoreGooglePhotorealisticTilesLayers(app: GeoLibreAppAPI): void {
   if (
     useAppStore.getState().layers.some(isGooglePhotorealisticTilesLayer)
@@ -1138,24 +1227,16 @@ function forceGooglePhotorealisticMercatorProjection(
   app: GeoLibreAppAPI,
   mapOverride?: ReturnType<ThreeDTilesControl["getMap"]>,
 ): void {
-  if (googleTilesPreviousProjection === null) {
-    // Only remember a projection worth restoring to. Never capture "mercator":
-    // it may be a value WE forced and persisted into the project file, so a
-    // reopened Google-only project would otherwise capture the forced mercator
-    // as the "previous" and leave the map stuck in mercator after the last
-    // Google layer is removed. Capturing only "globe" restores correctly
-    // within a session and never auto-restores a forced value across reloads.
-    const current = app.getMapProjection?.() ?? null;
-    googleTilesPreviousProjection = current === "globe" ? "globe" : null;
-  }
-  app.setMapProjection?.("mercator");
-  ensureMercatorProjection(mapOverride ?? app.getMap?.());
+  acquireMercatorProjectionLock(
+    GOOGLE_PROJECTION_LOCK_KEY,
+    app,
+    mapOverride ?? app.getMap?.(),
+  );
 }
 
 function restoreGooglePhotorealisticPreviousProjection(): void {
-  if (!googleTilesApp || googleTilesPreviousProjection === null) return;
-  googleTilesApp.setMapProjection?.(googleTilesPreviousProjection);
-  googleTilesPreviousProjection = null;
+  if (!googleTilesApp) return;
+  releaseMercatorProjectionLock(GOOGLE_PROJECTION_LOCK_KEY, googleTilesApp);
 }
 
 function isGooglePhotorealisticTilesLayer(layer: GeoLibreLayer): boolean {
@@ -1388,11 +1469,7 @@ function buildGooglePhotorealisticTilesDeckLayer(
     altitudeOffset,
     loadOptions: {
       fetch: requestHeaders ? { headers: requestHeaders } : undefined,
-      tileset: {
-        maximumScreenSpaceError: 20,
-        maximumMemoryUsage: 512,
-        memoryAdjustedScreenSpaceError: true,
-      },
+      tileset: THREE_D_TILES_TILESET_LOAD_LIMITS,
     },
     opacity: layer.opacity,
     pickable: false,
