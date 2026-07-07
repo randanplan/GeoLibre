@@ -3,8 +3,13 @@ import { describe, it } from "node:test";
 import type { FeatureCollection } from "geojson";
 import {
   appendQuery,
+  createWfsGetCapabilitiesUrl,
+  createWmsGetCapabilitiesUrl,
   createWmsTileUrl,
   fileNameFromPath,
+  normalizeWmsVersion,
+  stripOgcOperationParams,
+  wmsVersionFromEndpoint,
   geoJsonToPointRows,
   inferDelimitedTextField,
   layerNameFromPath,
@@ -80,6 +85,187 @@ describe("createWmsTileUrl", () => {
     });
     assert.ok(url.includes("TRANSPARENT=FALSE"));
     assert.ok(url.includes("HEIGHT=512"));
+  });
+
+  it("defaults to WMS 1.1.1 with an SRS parameter", () => {
+    const url = createWmsTileUrl({
+      endpoint: "https://x.test/wms",
+      layers: "a",
+      styles: "",
+      format: "image/png",
+      transparent: true,
+      tileSize: 256,
+    });
+    assert.ok(url.includes("VERSION=1.1.1"));
+    assert.ok(url.includes("SRS=EPSG%3A3857"));
+    assert.ok(!url.includes("CRS="));
+  });
+
+  it("switches to CRS for a WMS 1.3.0 request", () => {
+    // A 1.3.0-only server (e.g. the IGN Géoplateforme raster endpoint) rejects
+    // a 1.1.1 GetMap with VersionNegotiationFailed, so the version must be
+    // honored and the SRS parameter renamed to CRS.
+    const url = createWmsTileUrl({
+      endpoint: "https://x.test/wms",
+      layers: "a",
+      styles: "",
+      format: "image/png",
+      transparent: true,
+      tileSize: 256,
+      version: "1.3.0",
+    });
+    assert.ok(url.includes("VERSION=1.3.0"));
+    assert.ok(url.includes("CRS=EPSG%3A3857"));
+    assert.ok(!url.includes("SRS="));
+    assert.ok(url.includes("BBOX={bbox-epsg-3857}"));
+  });
+});
+
+describe("normalizeWmsVersion", () => {
+  it("collapses versions to the 1.1.1/1.3.0 pair", () => {
+    assert.equal(normalizeWmsVersion(undefined), "1.1.1");
+    assert.equal(normalizeWmsVersion(null), "1.1.1");
+    assert.equal(normalizeWmsVersion("1.1.1"), "1.1.1");
+    assert.equal(normalizeWmsVersion("1.3.0"), "1.3.0");
+    assert.equal(normalizeWmsVersion("1.3"), "1.3.0");
+    assert.equal(normalizeWmsVersion("garbage"), "1.1.1");
+    // An untyped JS plugin can pass a non-string; it must not throw.
+    assert.equal(normalizeWmsVersion(1.3), "1.1.1");
+    assert.equal(normalizeWmsVersion({}), "1.1.1");
+  });
+});
+
+describe("wmsVersionFromEndpoint", () => {
+  it("reads the VERSION parameter from a pasted service URL", () => {
+    assert.equal(
+      wmsVersionFromEndpoint("https://data.geopf.fr/wms-r?VERSION=1.3.0"),
+      "1.3.0",
+    );
+    assert.equal(
+      wmsVersionFromEndpoint("https://x.test/wms?version=1.1.1&foo=1"),
+      "1.1.1",
+    );
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=1.0.0"), "1.1.1");
+    // Any 1.x value is bucketed the same way normalizeWmsVersion buckets it.
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=1.2.0"), "1.1.1");
+  });
+
+  it("returns null when no usable version is present", () => {
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms"), null);
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=abc"), null);
+    // An undecodable value must not throw.
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=%E0%A4%A"), null);
+  });
+});
+
+describe("createWmsGetCapabilitiesUrl", () => {
+  it("appends SERVICE and REQUEST to a bare endpoint", () => {
+    const url = new URL(createWmsGetCapabilitiesUrl("https://x.test/wms"));
+    assert.equal(url.searchParams.get("SERVICE"), "WMS");
+    assert.equal(url.searchParams.get("REQUEST"), "GetCapabilities");
+  });
+
+  it("strips leftover GetMap operation params so they cannot collide", () => {
+    const url = new URL(
+      createWmsGetCapabilitiesUrl(
+        "https://x.test/wms?SERVICE=WMS&REQUEST=GetMap&LAYERS=a&BBOX=0,0,1,1&token=abc",
+      ),
+    );
+    assert.equal(url.searchParams.get("REQUEST"), "GetCapabilities");
+    assert.equal(url.searchParams.get("LAYERS"), null);
+    assert.equal(url.searchParams.get("BBOX"), null);
+    // Non-operation params (e.g. an auth token) are preserved.
+    assert.equal(url.searchParams.get("token"), "abc");
+  });
+
+  it("handles a relative endpoint", () => {
+    assert.equal(
+      createWmsGetCapabilitiesUrl("/geoserver/wms"),
+      "/geoserver/wms?SERVICE=WMS&REQUEST=GetCapabilities",
+    );
+  });
+
+  it("preserves a route-relative endpoint's path form", () => {
+    assert.equal(
+      createWmsGetCapabilitiesUrl("geoserver/wms"),
+      "geoserver/wms?SERVICE=WMS&REQUEST=GetCapabilities",
+    );
+  });
+
+  it("keeps the host of a protocol-relative endpoint", () => {
+    const url = createWmsGetCapabilitiesUrl("//example.com/geoserver/wms");
+    assert.ok(url.startsWith("//example.com/geoserver/wms?"));
+    const params = new URLSearchParams(url.slice(url.indexOf("?")));
+    assert.equal(params.get("SERVICE"), "WMS");
+    assert.equal(params.get("REQUEST"), "GetCapabilities");
+  });
+
+  it("strips stale operation params on a relative endpoint too", () => {
+    const url = createWmsGetCapabilitiesUrl(
+      "/geoserver/wms?REQUEST=GetMap&LAYERS=a&token=abc",
+    );
+    // Relative form is preserved (no scheme/host injected).
+    assert.ok(url.startsWith("/geoserver/wms?"));
+    const params = new URLSearchParams(url.slice(url.indexOf("?")));
+    assert.equal(params.get("REQUEST"), "GetCapabilities");
+    assert.equal(params.get("LAYERS"), null);
+    assert.equal(params.get("token"), "abc");
+  });
+});
+
+describe("createWfsGetCapabilitiesUrl", () => {
+  it("appends SERVICE, REQUEST, and the version when given", () => {
+    const url = new URL(
+      createWfsGetCapabilitiesUrl("https://x.test/wfs", "2.0.0"),
+    );
+    assert.equal(url.searchParams.get("SERVICE"), "WFS");
+    assert.equal(url.searchParams.get("REQUEST"), "GetCapabilities");
+    assert.equal(url.searchParams.get("VERSION"), "2.0.0");
+  });
+
+  it("strips leftover GetFeature operation params", () => {
+    const url = new URL(
+      createWfsGetCapabilitiesUrl(
+        "https://x.test/ows?service=WFS&version=1.1.0&request=GetFeature&typeName=a&token=abc",
+      ),
+    );
+    assert.equal(url.searchParams.get("REQUEST"), "GetCapabilities");
+    assert.equal(url.searchParams.get("typeName"), null);
+    assert.equal(url.searchParams.get("token"), "abc");
+  });
+
+  it("omits VERSION when not provided", () => {
+    const url = new URL(createWfsGetCapabilitiesUrl("https://x.test/wfs"));
+    assert.equal(url.searchParams.get("VERSION"), null);
+  });
+});
+
+describe("stripOgcOperationParams", () => {
+  it("removes a pasted GetCapabilities query, leaving the base endpoint", () => {
+    assert.equal(
+      stripOgcOperationParams(
+        "https://wms.ign.gob.ar/geoserver/ows?service=wfs&version=1.1.0&request=GetCapabilities",
+        "WFS",
+      ),
+      "https://wms.ign.gob.ar/geoserver/ows",
+    );
+  });
+
+  it("keeps non-operation params like an auth token", () => {
+    assert.equal(
+      stripOgcOperationParams(
+        "https://x.test/wms?REQUEST=GetMap&LAYERS=a&token=abc",
+        "WMS",
+      ),
+      "https://x.test/wms?token=abc",
+    );
+  });
+
+  it("leaves an already-clean endpoint untouched", () => {
+    assert.equal(
+      stripOgcOperationParams("https://x.test/geoserver/wms", "WMS"),
+      "https://x.test/geoserver/wms",
+    );
   });
 });
 

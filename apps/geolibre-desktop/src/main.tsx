@@ -41,9 +41,25 @@ import { I18nextProvider } from "react-i18next";
 // paint is already in the right language.
 import i18n from "./i18n";
 import { installDiagnosticsCapture } from "./lib/diagnostics";
+import { isTauri } from "./lib/is-tauri";
 import { installStaleChunkReload } from "./lib/stale-chunk-reload";
 
 installDiagnosticsCapture();
+// In the desktop build, route geocoding (place search / reverse geocode)
+// through Tauri's native HTTP client so it bypasses WebView CORS: public
+// Nominatim's CDN intermittently omits the CORS header on cached responses,
+// which the WebView rejects as "Search failed. Try again." Lazy + desktop-only
+// so the web/embedded bundles never import the Tauri HTTP plugin.
+if (isTauri()) {
+  void import("./lib/geocoding-fetch")
+    .then(({ installNativeGeocodingFetch }) => installNativeGeocodingFetch())
+    .catch((error: unknown) => {
+      // If the install fails, geocoding stays on the browser fetch (the
+      // CORS-buggy path this fixes), so surface it rather than let it become a
+      // silent unhandled rejection.
+      console.error("[GeoLibre] Failed to install native geocoding fetch", error);
+    });
+}
 // Recover from chunks orphaned by a web redeploy (stale lazy import → 404). A
 // no-op in the desktop build, whose chunks are bundled locally.
 installStaleChunkReload();

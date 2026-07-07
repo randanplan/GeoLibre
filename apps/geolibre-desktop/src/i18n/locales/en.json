@@ -63,7 +63,15 @@
   },
   "managePlugins": {
     "failed": "Failed",
-    "failedToLoad": "Failed to load: {{message}}"
+    "failedToLoad": "Failed to load: {{message}}",
+    "trust": {
+      "title": "Load plugins from this project?",
+      "description_one": "This project wants to load 1 external plugin from a URL you have not installed. Plugins run code with full access to the app.",
+      "description_other": "This project wants to load {{count}} external plugins from URLs you have not installed. Plugins run code with full access to the app.",
+      "warning": "Only load plugins from sources you trust. Loaded plugins run with the same privileges as GeoLibre itself.",
+      "trustButton": "Trust and load",
+      "dismissButton": "Don't load"
+    }
   },
   "viewState": {
     "panelTitle": "Info"
@@ -121,6 +129,10 @@
       "wmts": {
         "label": "Add WMTS Layer",
         "description": "Add a WMTS tile URL template as a raster layer."
+      },
+      "ogcVectorTiles": {
+        "label": "Add OGC Vector Tiles Layer",
+        "description": "Add an OGC API - Tiles (vector) service from a TileJSON or tile template, optionally reading its source layers from a style URL."
       },
       "gpx": {
         "label": "Add GPX Layer",
@@ -232,7 +244,15 @@
       "urlPlaceholder": "https://example.com/geoserver/wms",
       "layers": "Layers",
       "styles": "Styles",
-      "transparent": "Transparent background"
+      "transparent": "Transparent background",
+      "retrieveLayers": "Retrieve layers",
+      "retrieving": "Retrieving...",
+      "retrievedLayers": "Retrieved layers",
+      "selectLayer_one": "Select from {{count}} layer",
+      "selectLayer_other": "Select from {{count}} layers",
+      "noLayersFound": "No layers were found for this service.",
+      "retrieveError": "Could not retrieve layers from this service.",
+      "version": "WMS version"
     },
     "wfs": {
       "defaultName": "WFS Layer",
@@ -246,13 +266,36 @@
       "outputFormat": "Output format",
       "srsName": "SRS name",
       "maxFeatures": "Max features",
-      "errorMaxFeaturesNumeric": "Enter a numeric max features value."
+      "errorMaxFeaturesNumeric": "Enter a numeric max features value.",
+      "retrieveTypes": "Retrieve types",
+      "retrieving": "Retrieving...",
+      "retrievedTypes": "Retrieved feature types",
+      "selectType_one": "Select from {{count}} feature type",
+      "selectType_other": "Select from {{count}} feature types",
+      "noTypesFound": "No feature types were found for this service.",
+      "retrieveError": "Could not retrieve feature types from this service."
     },
     "wmts": {
       "defaultName": "WMTS Layer",
       "sampleLabel": "World imagery (Wayback)",
       "errorUrl": "Enter a WMTS tile URL template.",
       "urlPlaceholder": "https://example.com/wmts/{z}/{y}/{x}.png"
+    },
+    "ogcVectorTiles": {
+      "defaultName": "OGC Vector Tiles Layer",
+      "tilesUrl": "Tiles URL",
+      "tilesUrlPlaceholder": "https://example.com/tiles/WebMercatorQuad?f=tilejson",
+      "tilesUrlHint": "A TileJSON metadata URL or a {z}/{y}/{x} MVT tile template.",
+      "styleUrl": "Style URL",
+      "styleUrlPlaceholder": "https://example.com/styles/default?f=mapbox",
+      "styleUrlHint": "Optional Mapbox/MapLibre style JSON. Used to discover the tileset's source layers when the TileJSON omits them.",
+      "sourceLayers": "Source layers",
+      "sourceLayersPlaceholder": "layer_a, layer_b",
+      "sourceLayersHint": "Optional comma-separated source layer names. Overrides the layers found in the TileJSON or style.",
+      "sampleLabel": "PDOK BGT (Netherlands)",
+      "errorUrl": "Enter a tiles URL or a style URL.",
+      "errorNoTiles": "Could not determine the vector tile endpoint. Enter a TileJSON URL, a tile template, or a style URL.",
+      "errorNoLayers": "Could not determine the vector tile source layers. Add a style URL or enter the source layer names."
     },
     "arcgis": {
       "defaultName": "ArcGIS Layer",
@@ -396,7 +439,19 @@
       "connect": "Connect",
       "stop": "Stop",
       "martinSource": "Martin source",
-      "runningOnPort": "Martin is running on port {{port}}."
+      "runningOnPort": "Martin is running on port {{port}}.",
+      "loadMode": "Load as",
+      "loadModeTiles": "Vector tiles (Martin, read-only)",
+      "loadModeEditable": "Editable layer (loads all features)",
+      "editableNotice": "Loads the table's features through the local processing server so they can be edited. Save changes back with the layer's \"Save edits to PostGIS table\" action.",
+      "statusListingTables": "Reading spatial tables...",
+      "statusTablesFound_one": "Found {{count}} spatial table.",
+      "statusTablesFound_other": "Found {{count}} spatial tables.",
+      "statusNoTables": "No spatial tables were found in this database.",
+      "editableTable": "Table",
+      "tableReadOnly": "{{table}} (read-only: no primary key)",
+      "errorSelectTable": "Select a table to load.",
+      "errorRuntimeMissing": "The processing server does not have the PostGIS runtime (psycopg) installed. Install the geolibre-server 'postgis' extra to load editable layers."
     },
     "video": {
       "defaultName": "Video Layer",
@@ -422,7 +477,18 @@
       "cornersNote": "The four corners georeference the video on the map. The video must be served over HTTPS and the host must allow cross-origin requests (CORS) for the frames to render."
     },
     "netcdf": {
-      "sampleLabel": "Air temperature"
+      "sampleLabel": "Air temperature",
+      "title": "Add NetCDF / HDF",
+      "description": "Render a NetCDF or HDF5 dataset: a remote Cloud-Optimized file via a kerchunk reference (read over HTTP range requests), or a local NetCDF or HDF5 file read in your browser.",
+      "sourceLabel": "Source",
+      "sourceCloud": "Cloud-Optimized (kerchunk URL)",
+      "sourceLocal": "Local file (NetCDF / HDF5)",
+      "localFileLabel": "Local file",
+      "chooseDifferentFile": "Choose a different file",
+      "readingFile": "Reading...",
+      "localFileHelp": "Select a local NetCDF or HDF5 file (.nc, .nc4, .cdf, .h5, or .hdf5); classic NetCDF-3 and NetCDF-4/HDF5 are both supported. It is decoded in your browser; large files use more memory.",
+      "errorNoVariables": "No renderable (2-D or higher) variables found in the file.",
+      "errorNoFile": "No file loaded."
     },
     "deckViz": {
       "defaultName": "Deck.gl Layer",
@@ -1356,6 +1422,7 @@
       "wms": "WMS Layer",
       "wfs": "WFS Layer",
       "wmts": "WMTS Layer",
+      "ogcVectorTiles": "OGC Vector Tiles Layer",
       "arcgis": "ArcGIS Layer",
       "georss": "GeoRSS Layer",
       "video": "Video Layer",
@@ -1754,6 +1821,45 @@
       }
     }
   },
+  "loadEditorFeatures": {
+    "menuItem": "Load features into editor…",
+    "title": "Load Features into Editor",
+    "collapse": "Collapse panel",
+    "expand": "Expand panel",
+    "description": "Load the vector features visible in the current map view into the GeoEditor to edit them, then save every feature or only your changes as GeoJSON.",
+    "vectorLayer": "Vector Layer",
+    "selectPlaceholder": "Select a layer…",
+    "refresh": "Refresh layer list",
+    "noLayers": "No vector layers are in the current view. Add a vector layer or pan to a basemap area with vector features, then refresh.",
+    "editSessionActive": "Finish the in-place geometry edit (Layers panel → Finish editing geometry) before loading or saving features here.",
+    "editorName": "Editor Name",
+    "editorNamePlaceholder": "Your name (optional)",
+    "loadFeatures": "Load Features",
+    "loading": "Loading features…",
+    "selectLayer": "Please select a layer first.",
+    "noneInView": "No features found in the current view for this layer.",
+    "editorUnavailable": "Could not activate the GeoEditor. Try again once the map has fully loaded.",
+    "noEditable": "No editable features were found in the current view for this layer.",
+    "loaded": "Loaded {{count}} feature(s) from \"{{layer}}\".",
+    "appended": "Appended {{count}} feature(s) from \"{{layer}}\".",
+    "loadedWithDropped": "{{message}} (skipped {{dropped}} invalid)",
+    "loadFailed": "Failed to load features into the editor.",
+    "confirmExisting": "The editor already holds {{count}} feature(s). Append to them, or discard and replace?",
+    "tooMany": "Loading {{count}} features may make the editor slow to respond. Load them anyway?",
+    "loadAnyway": "Load Anyway",
+    "append": "Append",
+    "appendHint": "Add the new features alongside the existing ones.",
+    "discard": "Discard & Replace",
+    "discardHint": "Remove the existing features and load the new ones.",
+    "noChanges": "No changes to save yet.",
+    "nothingToSave": "No features to save.",
+    "saved": "Saved {{count}} feature(s).",
+    "savedChanges": "Saved changes: {{added}} added, {{modified}} modified, {{deleted}} deleted.",
+    "saveFailed": "Failed to save the features.",
+    "saveChanges": "Save Changes",
+    "saveChangesHint": "Save only the features you added, edited, or deleted.",
+    "saveAll": "Save All"
+  },
   "geocode": {
     "title": "Geocode Addresses",
     "description": "Geocode a CSV of addresses into a point layer. Each matched row becomes a point carrying the original columns plus the resolved coordinates and match score.",
@@ -2095,6 +2201,15 @@
       "runLocal": "Run locally (WASM)",
       "runLocalHint": "Run locally in WebAssembly (no Python sidecar)",
       "runningLocally": "Running locally with WebAssembly. No sidecar required.",
+      "catalogSnapshotError": "Could not load Whitebox catalog snapshot.",
+      "localRunnerError": "Could not load the local (WASM) tool runner. Refresh and try again, or use the sidecar if it is available.",
+      "output": {
+        "geojson": "GeoJSON (add to map)",
+        "geoparquet": "GeoParquet (download, keeps CRS)",
+        "flatgeobuf": "FlatGeobuf (download, keeps CRS)",
+        "shapefile": "Shapefile (download, keeps CRS)",
+        "projectedHint": "Saved to your downloads in the target CRS. The map only displays EPSG:4326, so a projected result is not added as a layer."
+      },
       "filterBySource": "Filter by source",
       "allSources": "All sources",
       "geolibreTools": "GeoLibre tools",
@@ -2300,6 +2415,19 @@
     "identifyStopInspectPixels": "Stop inspecting pixel values",
     "identifyUnavailable": "Identify is only available for vector, WMS, and COG layers",
     "exportGeoTiff": "GeoTIFF (COG)",
+    "stylesMenu": "Styles",
+    "exportMapboxStyle": "Export as Mapbox GL style",
+    "exportSldStyle": "Export as OGC SLD",
+    "exportQmlStyle": "Export as QGIS QML",
+    "exportStyleSuccess": "Style exported.",
+    "exportStyleDataNotReady": "Layer data is not ready yet. Try again in a moment.",
+    "exportStyleNeedsFeatures": "Style export requires a vector layer with features.",
+    "exportStyleError": "Could not export this layer's style.",
+    "importStyle": "Import style (Mapbox GL / SLD / QML)…",
+    "importStyleSuccess": "Style imported.",
+    "importStyleInvalid": "That file is not valid JSON, SLD, or QML.",
+    "importStyleNoMatch": "No symbology could be read from that style.",
+    "importStyleError": "Could not import this style.",
     "bindToTimeSlider": "Bind to Time Slider…",
     "unbindFromTimeSlider": "Unbind from Time Slider",
     "bindDialogDescription": "Filter this layer's features by a date or timestamp property as you scrub the timeline. The layer keeps its styling and opacity.",
@@ -2316,6 +2444,15 @@
     "openRasterStylePanel": "Edit raster style…",
     "exportRasterSuccess": "Raster exported.",
     "exportRasterError": "Could not export this raster.",
+    "saveEditsToSource": "Save edits to source file",
+    "saveEditsSuccess": "Saved {{count}} feature(s) to the source file.",
+    "saveEditsNoFeatures": "This layer has no features to save.",
+    "saveEditsError": "Could not save edits to the source file.",
+    "saveEditsToPostgis": "Save edits to PostGIS table",
+    "saveEditsPostgisSuccess": "Saved to {{table}}: {{inserted}} inserted, {{updated}} updated, {{deleted}} deleted.",
+    "saveEditsPostgisSkippedFields": "Fields without a matching table column were not saved: {{fields}}.",
+    "saveEditsPostgisRefreshWarning": "Edits were saved to the table, but refreshing the layer failed. Reload the layer before saving again, or new features may be inserted twice.",
+    "saveEditsPostgisNoConnection": "No PostgreSQL connection is available for this layer. Reconnect in Add Data > PostgreSQL, then try again.",
     "typeBasemap": "basemap",
     "searchPlaces": "Search places",
     "searchPlacesPlaceholder": "Search places...",
@@ -2363,7 +2500,13 @@
     "customRamp": "Custom…",
     "customColors": "Custom colors",
     "customColorsValid": "{{count}} colors, low to high. Use Reverse to flip.",
-    "customColorsHint": "Enter at least two hex codes, separated by commas or spaces."
+    "customColorsHint": "Enter at least two hex codes, separated by commas or spaces.",
+    "imagePalette": "Image palette",
+    "createLegend": "Create legend from palette",
+    "createLegendHint": "Adds a legend with one item per pixel value, using the raster's palette colors. Rename items to class names afterward.",
+    "createLegendPending": "Reading palette…",
+    "createLegendEmpty": "No palette colors found for this raster.",
+    "createLegendError": "Could not read the raster palette."
   },
   "raster": {
     "cogConvertConfirm": "\"{{name}}\" is a plain (striped) GeoTIFF, which cannot be displayed directly. Convert it to a Cloud-Optimized GeoTIFF now and load that?",

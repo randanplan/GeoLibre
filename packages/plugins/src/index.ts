@@ -85,6 +85,7 @@ export {
   openColorbarPanel,
   openHtmlPanel,
   openLegendPanel,
+  openLegendPanelWithItems,
   openLidarLayerPanel,
   restoreLidarLayers,
   openMeasurePanel,
@@ -121,6 +122,14 @@ export {
   type KerchunkRefs,
   type KerchunkVariable,
 } from "./plugins/kerchunk-reference-store";
+export {
+  openLocalNetcdf,
+  buildInlineZarrRefs,
+  type LocalNetcdfFile,
+  type LocalNetcdfVariable,
+  type LocalNetcdfLayerRefs,
+  type InlineZarrGrid,
+} from "./plugins/local-netcdf";
 export {
   closeDuckDBLayerPanel,
   getDuckDBFeatureBounds,
@@ -175,6 +184,13 @@ export {
   RASTER_SOURCE_KIND,
   getRasterBandStats,
 } from "./plugins/raster-symbology-texture";
+export {
+  disposeAllPaletteLegends,
+  disposePaletteLegend,
+  extractPaletteLegend,
+  getPaletteLegend,
+  type PaletteLegendEntry,
+} from "./plugins/raster-palette";
 export { colormapColors, warmColormapColors } from "./plugins/colormap-colors";
 export {
   closeVectorLayerPanel,
@@ -265,7 +281,23 @@ export {
   endLayerGeometryEdit,
   getGeometryEditTargetLayerId,
   subscribeGeometryEdit,
+  isGeoEditorAvailableForImport,
+  getGeoEditorFeatureCount,
+  hasViewImportBaseline,
+  loadViewFeaturesIntoEditor,
+  buildEditorSaveCollection,
 } from "./plugins/maplibre-geo-editor";
+export {
+  listViewVectorLayers,
+  resolveStoreLayerViewSource,
+  queryViewLayerFeatures,
+  VIEW_IMPORT_ID_PROPERTY,
+  VIEW_IMPORT_CHANGE_PROPERTY,
+  type ViewVectorLayer,
+  type ViewImportMap,
+  type ViewImportExport,
+  type ViewImportChangeCounts,
+} from "./plugins/geo-editor-view-import";
 export { maplibreGeoAgentPlugin } from "./plugins/maplibre-geoagent";
 export { maplibreUsgsLidarPlugin } from "./plugins/maplibre-usgs-lidar";
 export { maplibreNasaEarthdataPlugin } from "./plugins/maplibre-nasa-earthdata";

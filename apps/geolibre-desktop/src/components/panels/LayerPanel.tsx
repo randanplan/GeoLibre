@@ -22,11 +22,25 @@ import {
   getLayerTimeBinding,
   RASTER_SOURCE_KIND,
   reloadVectorControlLayer,
+  SKETCHES_SOURCE_KIND,
   TIME_SLIDER_PLUGIN_ID,
   type TimePropertyCandidate,
 } from "@geolibre/plugins";
 import type { MapController } from "@geolibre/map";
-import { isPlaceholderLayer, placeholderMessage } from "@geolibre/map";
+import {
+  applyMapboxStyleImport,
+  applyQmlImport,
+  applySldImport,
+  buildMapboxStyle,
+  buildQml,
+  buildSld,
+  isPlaceholderLayer,
+  mapboxStyleToJson,
+  parseMapboxStyle,
+  parseQml,
+  parseSld,
+  placeholderMessage,
+} from "@geolibre/map";
 import { getIsMobileViewport } from "../../hooks/useIsMobileViewport";
 import { createAppAPI, usePluginRegistry } from "../../hooks/usePlugins";
 import { useDesktopSettingsStore } from "../../hooks/useDesktopSettings";
@@ -76,10 +90,13 @@ import {
   Pencil,
   PencilRuler,
   RefreshCw,
+  Save,
+  SquarePen,
   Table2,
   TableProperties,
   Timer,
   Trash2,
+  Upload,
   ZoomIn,
 } from "lucide-react";
 import { clamp } from "../../lib/clamp";
@@ -103,6 +120,22 @@ import {
   shapefileFieldWarnings,
   type VectorExportFormat,
 } from "../../lib/vector-export";
+import {
+  openLocalDataFileWithFallback,
+  saveTextFileWithFallback,
+} from "../../lib/tauri-io";
+import {
+  readPostgisTable,
+  writePostgisTable,
+  writeVectorToSource,
+} from "@geolibre/processing";
+import {
+  postgisBaselineKeys,
+  postgisFeatureKeys,
+  resolvePostgisConnection,
+  unregisterPostgisConnection,
+} from "../../lib/postgis-connections";
+import { isTauri } from "../../lib/is-tauri";
 import { BasemapPickerDialog } from "./BasemapPickerDialog";
 import { LayerPanelPlaceSearch } from "./LayerPanelPlaceSearch";
 
@@ -187,6 +220,40 @@ function sourceUrlsFromLayer(layer: GeoLibreLayer): string[] {
     (value): value is string =>
       typeof value === "string" && value.trim().length > 0,
   );
+}
+
+// Source formats whose in-place write-back the sidecar supports today. Kept in
+// sync with the backend gate in `app/vector.py` (_WRITABLE_EXTENSIONS).
+const WRITEBACK_EXTENSIONS = ["gpkg", "geojson", "json"];
+
+/**
+ * Whether the layer is an editable PostGIS table with a usable primary key
+ * (loaded via Add Data > PostgreSQL in editable mode). The sidecar diffs the
+ * features against the source table by that key on save.
+ */
+function isPostgisEditableLayer(layer: GeoLibreLayer): boolean {
+  return (
+    layer.type === "geojson" &&
+    layer.metadata.sourceKind === "postgis-table" &&
+    typeof layer.metadata.postgisTable === "string" &&
+    typeof layer.metadata.postgisPrimaryKey === "string"
+  );
+}
+
+/**
+ * Whether the layer's edits can be committed back to its source: a
+ * desktop-only, geojson-backed layer loaded either from a local file in a
+ * supported format or from a PostGIS table with a primary key. The sidecar
+ * needs real filesystem/database access, so this is false on the web build.
+ */
+function canWriteEditsToSource(layer: GeoLibreLayer): boolean {
+  if (!isTauri() || layer.type !== "geojson") return false;
+  if (isPostgisEditableLayer(layer)) return true;
+  const path =
+    typeof layer.sourcePath === "string" ? layer.sourcePath.trim() : "";
+  if (!path) return false;
+  const ext = path.split(".").pop()?.toLowerCase();
+  return ext ? WRITEBACK_EXTENSIONS.includes(ext) : false;
 }
 
 function layerMetadataPayload(layer: GeoLibreLayer): Record<string, unknown> {
@@ -397,6 +464,9 @@ export function LayerPanel({
   const removeLayer = useAppStore((s) => s.removeLayer);
   const updateLayer = useAppStore((s) => s.updateLayer);
   const setAttributeTableOpen = useAppStore((s) => s.setAttributeTableOpen);
+  const setLoadEditorFeaturesOpen = useAppStore(
+    (s) => s.setLoadEditorFeaturesOpen,
+  );
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [basemapPickerOpen, setBasemapPickerOpen] = useState(false);
@@ -839,6 +909,415 @@ export function LayerPanel({
       }
     },
     [clearRefreshStatusTimer, mapControllerRef, scheduleStatusClear],
+  );
+
+  // Shared symbology-export flow: resolve the layer's features, build the style
+  // text via `build`, save it, and set the success/warning/error status. Each
+  // format (Mapbox GL / SLD / QML) supplies only its builder and file metadata,
+  // so the three export handlers stay in sync as more formats are added. A
+  // builder returns `{ error }` to abort with a message (e.g. the Mapbox
+  // exporter needs embedded features), or `{ text, warnings }` to save.
+  const exportLayerStyle = useCallback(
+    async (
+      layer: GeoLibreLayer,
+      build: (
+        geojson: FeatureCollection | null,
+      ) => { text: string; warnings: string[] } | { error: string },
+      fileMeta: {
+        defaultName: string;
+        filters: { name: string; extensions: string[] }[];
+        browserTypes: { description: string; accept: Record<string, string[]> }[];
+        mimeType: string;
+      },
+    ) => {
+      clearRefreshStatusTimer(layer.id);
+      try {
+        const geojson = await resolveLayerGeojson(
+          layer,
+          mapControllerRef.current?.getMap() ?? undefined,
+        );
+        const built = build(geojson ?? null);
+        if ("error" in built) {
+          setRefreshStatuses((current) => ({
+            ...current,
+            [layer.id]: { type: "error", message: built.error },
+          }));
+          scheduleStatusClear(layer.id);
+          return;
+        }
+        const savedPath = await saveTextFileWithFallback(built.text, fileMeta);
+        // A null path means the user cancelled the save dialog, so no note.
+        if (savedPath !== null) {
+          setRefreshStatuses((current) => ({
+            ...current,
+            [layer.id]:
+              built.warnings.length > 0
+                ? {
+                    type: "warning",
+                    message: `${t("layers.exportStyleSuccess")} ${built.warnings.join(" ")}`,
+                  }
+                : { type: "success", message: t("layers.exportStyleSuccess") },
+          }));
+          scheduleStatusClear(layer.id);
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : t("layers.exportStyleError");
+        setRefreshStatuses((current) => ({
+          ...current,
+          [layer.id]: { type: "error", message },
+        }));
+        scheduleStatusClear(layer.id);
+      }
+    },
+    [clearRefreshStatusTimer, mapControllerRef, scheduleStatusClear, t],
+  );
+
+  // Export a vector layer's symbology as a self-contained Mapbox GL / MapLibre
+  // style document, so the cartography can be reused in another map or handed to
+  // a teammate instead of being locked inside the .geolibre.json project.
+  const handleExportStyle = useCallback(
+    (layer: GeoLibreLayer) =>
+      exportLayerStyle(
+        layer,
+        (geojson) => {
+          if (!geojson) {
+            // A source-backed (Add Vector Layer) layer whose features are not
+            // readable yet is usually a not-yet-ready map source; the Mapbox
+            // export embeds the data, so it cannot proceed without it.
+            return {
+              error:
+                geojsonVectorSourceId(layer) !== null
+                  ? t("layers.exportStyleDataNotReady")
+                  : t("layers.exportStyleNeedsFeatures"),
+            };
+          }
+          const result = buildMapboxStyle(layer, geojson);
+          return { text: mapboxStyleToJson(result), warnings: result.warnings };
+        },
+        {
+          defaultName: `${sanitizeExportFileName(layer.name)}.style.json`,
+          filters: [{ name: "Mapbox GL style", extensions: ["json"] }],
+          browserTypes: [
+            {
+              description: "Mapbox GL style",
+              accept: { "application/json": [".json"] },
+            },
+          ],
+          mimeType: "application/json",
+        },
+      ),
+    [exportLayerStyle, t],
+  );
+
+  // Export a vector layer's symbology as an OGC SLD document, the interchange
+  // format QGIS, GeoServer, MapServer, and ArcGIS speak. Unlike the Mapbox
+  // export, SLD carries no data, so a layer whose features are not readable can
+  // still export (geometry detection falls back to a symbolizer superset).
+  const handleExportSldStyle = useCallback(
+    (layer: GeoLibreLayer) =>
+      exportLayerStyle(
+        layer,
+        (geojson) => {
+          const result = buildSld(layer, geojson);
+          return { text: result.sld, warnings: result.warnings };
+        },
+        {
+          defaultName: `${sanitizeExportFileName(layer.name)}.sld`,
+          filters: [{ name: "OGC SLD", extensions: ["sld", "xml"] }],
+          browserTypes: [
+            {
+              description: "OGC SLD",
+              accept: { "application/xml": [".sld", ".xml"] },
+            },
+          ],
+          mimeType: "application/xml",
+        },
+      ),
+    [exportLayerStyle],
+  );
+
+  // Export a vector layer's symbology as a QGIS QML style, the native style
+  // format QGIS users have on disk, so GeoLibre cartography can be opened in
+  // QGIS without rebuilding it by hand.
+  const handleExportQmlStyle = useCallback(
+    (layer: GeoLibreLayer) =>
+      exportLayerStyle(
+        layer,
+        (geojson) => {
+          const result = buildQml(layer, geojson);
+          return { text: result.qml, warnings: result.warnings };
+        },
+        {
+          defaultName: `${sanitizeExportFileName(layer.name)}.qml`,
+          filters: [{ name: "QGIS QML", extensions: ["qml"] }],
+          browserTypes: [
+            { description: "QGIS QML", accept: { "application/xml": [".qml"] } },
+          ],
+          mimeType: "application/xml",
+        },
+      ),
+    [exportLayerStyle],
+  );
+
+  // Import a symbology file (Mapbox GL / MapLibre style JSON or an OGC SLD) and
+  // apply it to a vector layer, so cartography authored elsewhere (QGIS,
+  // GeoServer, another map, or a style exported from GeoLibre) can be brought
+  // back in instead of being rebuilt by hand. The format is detected from the
+  // file content (XML vs JSON). Anything the style could not represent is
+  // surfaced as a warning rather than dropped silently.
+  const handleImportStyle = useCallback(
+    async (layer: GeoLibreLayer) => {
+      clearRefreshStatusTimer(layer.id);
+      try {
+        const picked = await openLocalDataFileWithFallback({
+          filters: [
+            {
+              name: "Style (Mapbox GL / SLD / QML)",
+              extensions: ["json", "sld", "qml", "xml"],
+            },
+          ],
+          accept:
+            ".json,.sld,.qml,.xml,application/json,application/xml,text/xml",
+          readText: true,
+        });
+        // A null result means the user dismissed the file dialog; no note. Guard
+        // on `picked` itself (not `picked.text`) so an empty/whitespace file is
+        // still parsed and surfaces an "invalid" error rather than a silent
+        // no-op that looks like a cancel.
+        if (!picked || picked.text === undefined) return;
+
+        // Detect the format from the content, which is more reliable than the
+        // file extension (a `.xml` can hold either XML dialect): a QGIS QML has
+        // a `<qgis>`/`renderer-v2` root, an SLD a `StyledLayerDescriptor` root,
+        // and everything else is parsed as a Mapbox GL style JSON.
+        const trimmed = picked.text.trimStart();
+        const isXml = trimmed.startsWith("<");
+        const isQml = isXml && /<qgis[\s>]|<renderer-v2[\s>]/.test(picked.text);
+        const isSld = isXml && !isQml;
+
+        let result:
+          | ReturnType<typeof parseMapboxStyle>
+          | ReturnType<typeof parseSld>
+          | ReturnType<typeof parseQml>;
+        let matched: number;
+        let applyImport: (base: GeoLibreLayer["style"]) => GeoLibreLayer["style"];
+
+        if (isQml) {
+          const qmlResult = parseQml(picked.text);
+          result = qmlResult;
+          matched = qmlResult.matchedRuleCount;
+          applyImport = (base) => applyQmlImport(base, qmlResult);
+        } else if (isSld) {
+          const sldResult = parseSld(picked.text);
+          result = sldResult;
+          matched = sldResult.matchedRuleCount;
+          applyImport = (base) => applySldImport(base, sldResult);
+        } else {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(picked.text);
+          } catch {
+            setRefreshStatuses((current) => ({
+              ...current,
+              [layer.id]: {
+                type: "error",
+                message: t("layers.importStyleInvalid"),
+              },
+            }));
+            scheduleStatusClear(layer.id);
+            return;
+          }
+          const mapboxResult = parseMapboxStyle(parsed);
+          result = mapboxResult;
+          matched = mapboxResult.matchedLayerCount;
+          applyImport = (base) => applyMapboxStyleImport(base, mapboxResult);
+        }
+
+        if (matched === 0) {
+          setRefreshStatuses((current) => ({
+            ...current,
+            [layer.id]: {
+              type: "error",
+              message: result.warnings[0] ?? t("layers.importStyleNoMatch"),
+            },
+          }));
+          scheduleStatusClear(layer.id);
+          return;
+        }
+        // The file picker await can block while the user edits the Style panel,
+        // so merge onto the current store style (not the pre-await snapshot) to
+        // avoid clobbering a concurrent edit, matching handleRefreshLayer.
+        const latest = useAppStore
+          .getState()
+          .layers.find((candidate) => candidate.id === layer.id);
+        if (!latest) return;
+        updateLayer(layer.id, {
+          style: applyImport(latest.style),
+        });
+        setRefreshStatuses((current) => ({
+          ...current,
+          [layer.id]:
+            result.warnings.length > 0
+              ? {
+                  type: "warning",
+                  message: `${t("layers.importStyleSuccess")} ${result.warnings.join(" ")}`,
+                }
+              : { type: "success", message: t("layers.importStyleSuccess") },
+        }));
+        scheduleStatusClear(layer.id);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : t("layers.importStyleError");
+        setRefreshStatuses((current) => ({
+          ...current,
+          [layer.id]: { type: "error", message },
+        }));
+        scheduleStatusClear(layer.id);
+      }
+    },
+    [clearRefreshStatusTimer, scheduleStatusClear, t, updateLayer],
+  );
+
+  // Commit the layer's current (edited) features back to the source they were
+  // loaded from, via the sidecar: either overwriting the local file in place,
+  // or diffing against the PostGIS table by primary key. Unlike Export, there
+  // is no save dialog: write-back targets the known source.
+  const handleSaveEditsToSource = useCallback(
+    async (layer: GeoLibreLayer) => {
+      clearRefreshStatusTimer(layer.id);
+      const isPostgis = isPostgisEditableLayer(layer);
+      const path =
+        typeof layer.sourcePath === "string" ? layer.sourcePath.trim() : "";
+      if (!isPostgis && !path) return;
+      try {
+        const geojson = await resolveLayerGeojson(
+          layer,
+          mapControllerRef.current?.getMap() ?? undefined,
+        );
+        if (!geojson || geojson.features.length === 0) {
+          setRefreshStatuses((current) => ({
+            ...current,
+            [layer.id]: {
+              type: "error",
+              message: t("layers.saveEditsNoFeatures"),
+            },
+          }));
+          scheduleStatusClear(layer.id);
+          return;
+        }
+        let message: string;
+        if (isPostgis) {
+          const connection = resolvePostgisConnection(layer);
+          if (!connection) {
+            setRefreshStatuses((current) => ({
+              ...current,
+              [layer.id]: {
+                type: "error",
+                message: t("layers.saveEditsPostgisNoConnection"),
+              },
+            }));
+            scheduleStatusClear(layer.id);
+            return;
+          }
+          const schema =
+            typeof layer.metadata.postgisSchema === "string"
+              ? layer.metadata.postgisSchema
+              : "public";
+          const table = layer.metadata.postgisTable as string;
+          const result = await writePostgisTable({
+            connection,
+            schema_name: schema,
+            table,
+            geojson,
+            // Scope deletions to the rows this session actually read so a
+            // save cannot sweep away rows inserted concurrently elsewhere.
+            // The baseline lives on the layer metadata, so it survives a
+            // project reload.
+            baseline_keys: postgisBaselineKeys(layer),
+          });
+          // Re-read the table so inserted features pick up their database-
+          // assigned primary keys; without this a second save would insert
+          // them again as duplicates.
+          let fresh;
+          try {
+            fresh = await readPostgisTable({
+              connection,
+              schema_name: schema,
+              table,
+            });
+          } catch {
+            // The write committed; only the refresh failed. Reporting this as
+            // a plain failure would invite a retry that re-inserts the still
+            // key-less new features, so surface a distinct warning instead.
+            setRefreshStatuses((current) => ({
+              ...current,
+              [layer.id]: {
+                type: "error",
+                message: t("layers.saveEditsPostgisRefreshWarning"),
+              },
+            }));
+            scheduleStatusClear(layer.id);
+            return;
+          }
+          // Merge into the store's current metadata, not the click-time
+          // closure: the write/re-read round trip is slow enough for other
+          // updates (auto-refresh, time-slider binding) to land in between.
+          const currentMetadata =
+            useAppStore.getState().layers.find((l) => l.id === layer.id)
+              ?.metadata ?? layer.metadata;
+          updateLayer(layer.id, {
+            geojson: fresh.geojson,
+            metadata: {
+              ...currentMetadata,
+              featureCount: fresh.feature_count,
+              postgisBaselineKeys: postgisFeatureKeys(fresh.geojson),
+            },
+          });
+          message = t("layers.saveEditsPostgisSuccess", {
+            table: `${schema}.${table}`,
+            inserted: result.inserted,
+            updated: result.updated,
+            deleted: result.deleted,
+          });
+          // The sidecar reports editor-added fields it could not persist
+          // (no matching table column); surface that so the drop is not
+          // silent behind a plain success toast.
+          if (result.skipped_fields?.length) {
+            message = `${message} ${t("layers.saveEditsPostgisSkippedFields", {
+              fields: result.skipped_fields.join(", "),
+            })}`;
+          }
+        } else {
+          const result = await writeVectorToSource({ path, geojson });
+          message = t("layers.saveEditsSuccess", {
+            count: result.feature_count,
+          });
+        }
+        setRefreshStatuses((current) => ({
+          ...current,
+          [layer.id]: { type: "success", message },
+        }));
+        scheduleStatusClear(layer.id);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : t("layers.saveEditsError");
+        setRefreshStatuses((current) => ({
+          ...current,
+          [layer.id]: { type: "error", message },
+        }));
+        scheduleStatusClear(layer.id);
+      }
+    },
+    [
+      clearRefreshStatusTimer,
+      mapControllerRef,
+      scheduleStatusClear,
+      t,
+      updateLayer,
+    ],
   );
 
   // Close the bind dialog and invalidate any in-flight scan/confirm so a late
@@ -1514,6 +1993,20 @@ export function LayerPanel({
                   : t("layers.identifyFeatures")
               : t("layers.identifyUnavailable");
             const canEditGeometry = canEditLayerGeometry(layer);
+            // A vector layer whose in-view features can be loaded into the
+            // GeoEditor (a copy, not in-place): geojson and vector tile layers
+            // (vector-tiles, and PMTiles/MBTiles carrying vector tiles),
+            // excluding the editor's own Sketches layer. Tile layers are
+            // included here (unlike Edit geometry) because loading grabs a copy
+            // of what is rendered rather than editing the source in place;
+            // raster PMTiles/MBTiles have no vector features so are excluded.
+            const canLoadIntoEditor =
+              layer.metadata.sourceKind !== SKETCHES_SOURCE_KIND &&
+              layer.metadata.tileType !== "raster" &&
+              (layer.type === "geojson" ||
+                layer.type === "vector-tiles" ||
+                layer.type === "pmtiles" ||
+                layer.type === "mbtiles");
             const geometryEditActive = geometryEditLayerId === layer.id;
             const geometryEditElsewhere =
               geometryEditLayerId !== null && !geometryEditActive;
@@ -1527,6 +2020,15 @@ export function LayerPanel({
             // Export writes the layer's GeoJSON features to disk; only
             // geojson-backed vector layers carry those features.
             const canExportLayer = layer.type === "geojson";
+            // Importing a style (Mapbox GL or SLD) only writes the layer's
+            // vector symbology, so it applies to any vector-styled layer (local
+            // GeoJSON and vector tiles), not just the export-capable GeoJSON
+            // layers.
+            const canImportStyle =
+              layer.type === "geojson" || layer.type === "vector-tiles";
+            // Write-back commits edits to the layer's local source file in place
+            // (desktop only, supported formats); Export writes a new file.
+            const canWriteBack = canWriteEditsToSource(layer);
             // Vector layers with a date/timestamp property can be driven by the
             // Time Slider; the binding (if any) lives on the layer metadata.
             const canBindTimeSlider = layer.type === "geojson";
@@ -1876,6 +2378,17 @@ export function LayerPanel({
                             : "Edit geometry"}
                         </DropdownMenuItem>
                       )}
+                      {canLoadIntoEditor && (
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            selectLayer(layer.id);
+                            setLoadEditorFeaturesOpen(true, layer.id);
+                          }}
+                        >
+                          <SquarePen className="mr-2 h-3.5 w-3.5" />
+                          {t("loadEditorFeatures.menuItem")}
+                        </DropdownMenuItem>
+                      )}
                       {canOpenAttributeTable && (
                         <DropdownMenuItem
                           onSelect={() => {
@@ -1947,6 +2460,71 @@ export function LayerPanel({
                             </DropdownMenuItem>
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
+                      )}
+                      {/* Symbology import/export live in their own Styles menu,
+                          separate from the feature-data Export menu above. */}
+                      {(canExportLayer || canImportStyle) && (
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <Palette className="h-3.5 w-3.5" />
+                            {t("layers.stylesMenu")}
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {canExportLayer && (
+                              <>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    void handleExportStyle(layer);
+                                  }}
+                                >
+                                  <Download className="mr-2 h-3.5 w-3.5" />
+                                  {t("layers.exportMapboxStyle")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    void handleExportSldStyle(layer);
+                                  }}
+                                >
+                                  <Download className="mr-2 h-3.5 w-3.5" />
+                                  {t("layers.exportSldStyle")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onSelect={() => {
+                                    void handleExportQmlStyle(layer);
+                                  }}
+                                >
+                                  <Download className="mr-2 h-3.5 w-3.5" />
+                                  {t("layers.exportQmlStyle")}
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                            {canExportLayer && canImportStyle && (
+                              <DropdownMenuSeparator />
+                            )}
+                            {canImportStyle && (
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  void handleImportStyle(layer);
+                                }}
+                              >
+                                <Upload className="mr-2 h-3.5 w-3.5" />
+                                {t("layers.importStyle")}
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                      )}
+                      {canWriteBack && (
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            void handleSaveEditsToSource(layer);
+                          }}
+                        >
+                          <Save className="mr-2 h-3.5 w-3.5" />
+                          {isPostgisEditableLayer(layer)
+                            ? t("layers.saveEditsToPostgis")
+                            : t("layers.saveEditsToSource")}
+                        </DropdownMenuItem>
                       )}
                       {canEditRasterStyle && (
                         <DropdownMenuItem
@@ -2372,6 +2950,9 @@ export function LayerPanel({
               variant="destructive"
               onClick={() => {
                 if (!layerPendingRemoval) return;
+                // Drop the removed layer's PostGIS session state (connection
+                // string, baseline keys) so credentials don't outlive it.
+                unregisterPostgisConnection(layerPendingRemoval.id);
                 removeLayer(layerPendingRemoval.id);
                 setLayerPendingRemoval(null);
               }}

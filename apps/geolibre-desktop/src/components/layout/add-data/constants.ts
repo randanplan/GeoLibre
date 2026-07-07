@@ -19,6 +19,7 @@ export type KindI18nKey =
   | "wms"
   | "wfs"
   | "wmts"
+  | "ogcVectorTiles"
   | "gpx"
   | "georss"
   | "delimitedText"
@@ -40,6 +41,7 @@ export const KIND_I18N_KEY: Record<AddDataKind, KindI18nKey> = {
   wms: "wms",
   wfs: "wfs",
   wmts: "wmts",
+  "ogc-vector-tiles": "ogcVectorTiles",
   gpx: "gpx",
   georss: "georss",
   "delimited-text": "delimitedText",
@@ -61,6 +63,13 @@ export const DEFAULT_WFS_ENDPOINT = "https://ahocevar.com/geoserver/wfs";
 export const DEFAULT_WFS_TYPE_NAME = "topp:states";
 export const DEFAULT_WMTS_URL =
   "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/119/{z}/{y}/{x}";
+// PDOK BGT (Dutch large-scale base map) served as OGC API - Tiles vector tiles.
+// The style document carries the source-layer names the TileJSON omits; both
+// are prefilled so the sample works out of the box (zoom into the Netherlands).
+export const DEFAULT_OGC_VECTOR_TILES_URL =
+  "https://api.pdok.nl/lv/bgt/ogc/v1/tiles/WebMercatorQuad?f=tilejson";
+export const DEFAULT_OGC_VECTOR_TILES_STYLE_URL =
+  "https://api.pdok.nl/lv/bgt/ogc/v1/styles/bgt_standaardvisualisatie__webmercatorquad?f=mapbox";
 export const DEFAULT_GPX_URL =
   "https://data.source.coop/giswqs/opengeos/fells_loop.gpx";
 // USGS "Magnitude 2.5+ Earthquakes, Past Day" Atom feed (Simple georss:point).
@@ -92,9 +101,14 @@ export const DEFAULT_ARCGIS_URLS: Record<ArcGISLayerType, string> = {
 };
 // Keep in sync with GPX_PROXY_PATH in vite.config.ts (the dev proxy binds it there).
 export const GPX_PROXY_PATH = "/__geolibre_gpx_proxy";
-export const POSTGRES_CONNECTIONS_STORAGE_KEY =
-  "geolibre.postgres.connectionStrings";
-export const MAX_SAVED_POSTGRES_CONNECTIONS = 10;
+// Keep in sync with WMS_PROXY_PATH in vite.config.ts (the dev proxy binds it
+// there). Used to fetch a WMS GetCapabilities document without tripping CORS.
+export const WMS_PROXY_PATH = "/__geolibre_wms_proxy";
+// Keep in sync with WFS_PROXY_PATH in vite.config.ts. Used to fetch a WFS
+// GetCapabilities document (and GetFeature responses) without tripping CORS.
+export const WFS_PROXY_PATH = "/__geolibre_wfs_proxy";
+// PostgreSQL connection persistence constants moved to
+// lib/saved-postgres-connections.ts alongside the helpers that use them.
 // Cross-project catalog of reusable web-service layer definitions (see
 // service-library.ts). Bumping the key would orphan a user's saved services.
 export const SERVICE_LIBRARY_STORAGE_KEY = "geolibre.serviceLibrary";

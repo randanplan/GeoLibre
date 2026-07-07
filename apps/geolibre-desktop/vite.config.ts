@@ -8,7 +8,8 @@ import type {
   RollupOptions,
   WarningHandlerWithDefault,
 } from "rollup";
-import { defineConfig, type Plugin } from "vite";
+import { fileURLToPath } from "node:url";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { bundledPlugins } from "./vite-plugins/bundled-plugins";
 import { copyRtlText } from "./vite-plugins/copy-rtl-text";
@@ -22,6 +23,39 @@ const APP_BASE = process.env.GEOLIBRE_APP_BASE;
 const APP_VERSION = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 ).version as string;
+
+// Vite resolves `mode` from the `--mode` CLI flag (defaulting to `development`
+// for `vite`/`vite dev` and `production` for `vite build`). This shim runs at
+// module load, before `defineConfig` receives the resolved mode, so read
+// `--mode` from argv directly and fall back to NODE_ENV (which Vite's CLI sets
+// from the command). This lets `loadEnv` pick up mode-specific files such as
+// `.env.staging.local` under `vite build --mode staging`, not just NODE_ENV.
+function resolveViteMode(): string {
+  const argv = process.argv;
+  const inline = argv.find((arg) => arg.startsWith("--mode="));
+  if (inline) return inline.slice("--mode=".length);
+  const flagIndex = argv.findIndex((arg) => arg === "--mode" || arg === "-m");
+  if (flagIndex !== -1 && argv[flagIndex + 1]) return argv[flagIndex + 1];
+  return process.env.NODE_ENV || "development";
+}
+
+// Vite only exposes `VITE_`-prefixed vars to the client, so the Google Maps key
+// is surfaced as `VITE_GOOGLE_MAPS_API_KEY`. Accept a bare `GOOGLE_MAPS_API_KEY`
+// too (handy for local shell/CI testing) and copy it into the prefixed name.
+// `loadEnv(mode, dir, "")` reads the app's `.env*` files with no prefix filter,
+// so a key placed in `apps/geolibre-desktop/.env.local` also works, not just a
+// real shell env var (process.env alone would miss the file).
+const CONFIG_DIR = path.dirname(fileURLToPath(import.meta.url));
+const FILE_ENV = loadEnv(resolveViteMode(), CONFIG_DIR, "");
+if (!process.env.VITE_GOOGLE_MAPS_API_KEY) {
+  const googleMapsApiKey =
+    process.env.GOOGLE_MAPS_API_KEY ||
+    FILE_ENV.VITE_GOOGLE_MAPS_API_KEY ||
+    FILE_ENV.GOOGLE_MAPS_API_KEY;
+  if (googleMapsApiKey) {
+    process.env.VITE_GOOGLE_MAPS_API_KEY = googleMapsApiKey;
+  }
+}
 
 // Tauri sets TAURI_ENV_* env vars while running its beforeBuildCommand
 // (`npm run build`), so their presence flags a desktop build. Used below to drop
@@ -53,6 +87,15 @@ const PGLITE_CDN = process.env.GEOLIBRE_PGLITE_CDN !== "0";
 // PGlite yet still ships a service worker.
 const IS_EMBED = process.env.GEOLIBRE_EMBED === "1";
 const PWA_DISABLED = IS_TAURI_BUILD || IS_EMBED;
+
+// Microsoft Store MSIX build. Strips the in-app "Check for updates" flow (Help
+// menu, command palette, About dialog, and the automated startup check) so the
+// Store package updates only through the Store — Microsoft policy 10.2.5 rejects
+// a Store app that updates itself outside the Store. Set ONLY by the dedicated
+// Store build path (.github/workflows/msix-store.yml); every other build (the
+// GitHub .exe/winget installer, the sideload MSIX, portable, macOS, Linux, web,
+// and the Jupyter embed) leaves it unset, so their update checker is untouched.
+const IS_STORE_BUILD = process.env.GEOLIBRE_STORE_BUILD === "1";
 
 const pgliteCdnRequire = createRequire(import.meta.url);
 // The ESM entry of a package's manifest. Prefer the `module` field and the
@@ -612,6 +655,10 @@ function pwaPlugin(): Plugin[] {
     // its first runtime fetch and is CacheFirst-cached thereafter.
     "**/maplibre-*",
     "**/duckdb-*",
+    // h5wasm's ~5.6 MB single-file chunk (embedded libhdf5) for the local
+    // NetCDF/HDF reader. Lazily imported when a user opens a local file, so it
+    // is CacheFirst-cached on first use rather than bloating the precache.
+    "**/hdf5_hl-*",
     "**/pglite-*",
     "**/earth-engine-browser-*",
     "**/mapillary-*",
@@ -783,6 +830,7 @@ export default defineConfig({
   clearScreen: false,
   define: {
     __GEOLIBRE_VERSION__: JSON.stringify(APP_VERSION),
+    __GEOLIBRE_STORE_BUILD__: JSON.stringify(IS_STORE_BUILD),
     __PGLITE_CDN_URL__: JSON.stringify(PGLITE_CDN_URL),
     __PGLITE_POSTGIS_CDN_URL__: JSON.stringify(PGLITE_POSTGIS_CDN_URL),
     __CEREUS_WASM_CDN_URL__: JSON.stringify(CEREUS_WASM_CDN_URL),
@@ -844,6 +892,11 @@ export default defineConfig({
       // breaks that asset reference so the tiler stops rendering. Serve it
       // as-is. (Its plain-JS deps are pre-bundled via optimizeDeps.include.)
       "cog-tiler-wasm",
+      // h5wasm (local NetCDF/HDF5 reader) loads its libhdf5 .wasm via
+      // `new URL(..., import.meta.url)`; esbuild pre-bundling mangles that
+      // asset reference, so serve it as-is. Only reached through the lazy
+      // dynamic import in local-netcdf.ts when a user opens a local file.
+      "h5wasm",
     ],
   },
   build: {

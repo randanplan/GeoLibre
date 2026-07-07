@@ -90,6 +90,7 @@ import { KeyboardShortcutsDialog } from "../command/KeyboardShortcutsDialog";
 import { useGlobalShortcuts } from "../../hooks/useGlobalShortcuts";
 import { useViewportHistory } from "../../hooks/useViewportHistory";
 import type { Command } from "../../lib/commands";
+import { IS_STORE_BUILD } from "../../lib/updates";
 import { AddDataDialog, type AddDataKind } from "./AddDataDialog";
 import { AddNetcdfDialog } from "./AddNetcdfDialog";
 import { AboutDialog } from "./AboutDialog";
@@ -101,6 +102,7 @@ import type { CollaborationApi } from "../../hooks/useCollaboration";
 import { SettingsDialog } from "./SettingsDialog";
 import { SetViewDialog } from "./SetViewDialog";
 import { PrintLayoutDialog } from "./PrintLayoutDialog";
+import { LoadFeaturesIntoEditorDialog } from "./LoadFeaturesIntoEditorDialog";
 import { FieldCollectionDialog } from "./FieldCollectionDialog";
 import { RecordTourDialog } from "./RecordTourDialog";
 import { GeoreferencerDialog } from "./GeoreferencerDialog";
@@ -230,6 +232,15 @@ export function TopToolbar({
   const setRasterToolOpen = useAppStore((s) => s.setRasterToolOpen);
   const setSegmentationOpen = useAppStore((s) => s.setSegmentationOpen);
   const setSqlWorkspaceOpen = useAppStore((s) => s.setSqlWorkspaceOpen);
+  const setLoadEditorFeaturesOpen = useAppStore(
+    (s) => s.setLoadEditorFeaturesOpen,
+  );
+  const loadEditorFeaturesOpen = useAppStore(
+    (s) => s.ui.loadEditorFeaturesOpen,
+  );
+  const loadEditorFeaturesLayerId = useAppStore(
+    (s) => s.ui.loadEditorFeaturesLayerId,
+  );
   const setPythonConsoleOpen = useAppStore((s) => s.setPythonConsoleOpen);
   const setAssistantOpen = useAppStore((s) => s.setAssistantOpen);
   const projectName = useAppStore((s) => s.projectName);
@@ -810,16 +821,22 @@ export function TopToolbar({
       icon: MessageSquare,
       run: () => void openExternalLink(FEEDBACK_URL),
     },
-    {
-      id: "help.updates",
-      title: t("toolbar.command.checkForUpdates"),
-      group: t("toolbar.commandGroup.help"),
-      icon: RefreshCw,
-      run: () => {
-        setAboutOpen(true);
-        setCheckForUpdatesRequest((value) => value + 1);
-      },
-    },
+    // The Microsoft Store build omits the "Check for updates" command so the app
+    // updates only through the Store (policy 10.2.5).
+    ...(IS_STORE_BUILD
+      ? []
+      : [
+          {
+            id: "help.updates",
+            title: t("toolbar.command.checkForUpdates"),
+            group: t("toolbar.commandGroup.help"),
+            icon: RefreshCw,
+            run: () => {
+              setAboutOpen(true);
+              setCheckForUpdatesRequest((value) => value + 1);
+            },
+          },
+        ]),
     {
       id: "help.about",
       title: t("toolbar.command.about"),
@@ -1060,6 +1077,12 @@ export function TopToolbar({
         open={setViewOpen}
         onOpenChange={setSetViewOpen}
         mapControllerRef={mapControllerRef}
+      />
+      <LoadFeaturesIntoEditorDialog
+        open={loadEditorFeaturesOpen}
+        onOpenChange={setLoadEditorFeaturesOpen}
+        mapControllerRef={mapControllerRef}
+        initialLayerId={loadEditorFeaturesLayerId}
       />
       <ShareProjectDialog
         open={shareDialogOpen}

@@ -57,7 +57,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readDir, readFile } from "@tauri-apps/plugin-fs";
 import type { RefObject } from "react";
-import { useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { bundledPluginManifestPaths } from "virtual:bundled-plugins";
 import {
   installWebPluginArchive,
@@ -71,7 +71,11 @@ import {
   type InstalledWebPlugin,
 } from "../lib/external-plugins";
 import { appendDiagnostic } from "../lib/diagnostics";
-import { createWmsTileUrl } from "../components/layout/add-data/helpers";
+import { partitionProjectPluginManifestUrls } from "../lib/plugin-trust";
+import {
+  createWmsTileUrl,
+  normalizeWmsVersion,
+} from "../components/layout/add-data/helpers";
 import { createExternalNativeStoreLayer } from "../lib/external-native-layer";
 import { mergeStringLists } from "../lib/string-lists";
 import {
@@ -206,15 +210,9 @@ export async function installPluginArchive(
   // so the forced re-scan re-registers the updated version under the same id.
   unloadFilesystemPlugin(manager, pluginId, app);
   const desktopSettings = useDesktopSettingsStore.getState().desktopSettings;
-  const projectManifestUrls =
-    useAppStore.getState().projectPlugins?.manifestUrls ??
-    EMPTY_PLUGIN_MANIFEST_URLS;
-  await ensureExternalPluginsLoadedWithSettings(
-    desktopSettings,
-    projectManifestUrls,
-    app,
-    { force: true },
-  );
+  await ensureExternalPluginsLoadedWithSettings(desktopSettings, app, {
+    force: true,
+  });
   return pluginId;
 }
 
@@ -363,19 +361,21 @@ export function useExternalPluginsReady(
   const desktopSettings = useDesktopSettingsStore(
     (state) => state.desktopSettings,
   );
-  const projectPluginManifestUrls = useAppStore(
-    (state) => state.projectPlugins?.manifestUrls ?? EMPTY_PLUGIN_MANIFEST_URLS,
-  );
 
   useEffect(() => {
     // mapControllerRef is a stable ref object, so it is intentionally not a
     // dependency; createAppAPI dereferences .current lazily.
+    //
+    // Project-supplied plugin URLs are intentionally NOT loaded here: the scan
+    // only ever fetches/imports the user's installed URLs (desktop settings) and
+    // the bundled drop-ins. Untrusted project URLs are surfaced by
+    // useProjectPluginTrust and only reach this scan after the user trusts them
+    // (which adds them to desktopSettings and re-runs this effect). See #1062.
     void ensureExternalPluginsLoadedWithSettings(
       desktopSettings,
-      projectPluginManifestUrls,
       createAppAPI(mapControllerRef),
     );
-  }, [desktopSettings, projectPluginManifestUrls]);
+  }, [desktopSettings]);
 
   return useSyncExternalStore(
     (listener) => {
@@ -385,6 +385,81 @@ export function useExternalPluginsReady(
     () => externalPluginsLoaded,
     () => externalPluginsLoaded,
   );
+}
+
+export interface ProjectPluginTrustState {
+  /**
+   * Project-supplied plugin manifest URLs awaiting the user's trust decision.
+   * Empty when the opened project references no untrusted plugins (its URLs are
+   * already installed or bundled), which is the common case for a user's own
+   * saved projects.
+   */
+  pendingUrls: string[];
+  /**
+   * Trust every pending URL: add it to the persisted desktop settings so it is
+   * installed like any marketplace/manual plugin. This re-runs the external
+   * plugin scan (via useExternalPluginsReady's settings dependency), which is
+   * what actually fetches and imports the now-trusted plugins.
+   */
+  trust: () => void;
+  /** Dismiss the prompt for this session without loading or persisting anything. */
+  dismiss: () => void;
+}
+
+/**
+ * Gate the plugin manifest URLs carried inside an opened project behind an
+ * explicit user trust decision (#1062).
+ *
+ * When a project is opened, its `plugins.manifestUrls` are compared against the
+ * user's installed URLs and the bundled drop-ins. Any URL that is neither is
+ * "untrusted" and is surfaced here so the shell can show a trust prompt before
+ * the plugin's code is ever fetched or imported. Trusting persists the URLs to
+ * desktop settings (which loads them); dismissing loads nothing and persists
+ * nothing. A per-session dismissed set keeps a declined URL from re-prompting
+ * on every render or when another project references the same URL.
+ */
+export function useProjectPluginTrust(): ProjectPluginTrustState {
+  const projectManifestUrls = useAppStore(
+    (state) => state.projectPlugins?.manifestUrls ?? EMPTY_PLUGIN_MANIFEST_URLS,
+  );
+  const trustedManifestUrls = useDesktopSettingsStore(
+    (state) => state.desktopSettings.pluginManifestUrls,
+  );
+  const [dismissedUrls, setDismissedUrls] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const pendingUrls = useMemo(() => {
+    const { untrusted } = partitionProjectPluginManifestUrls(
+      projectManifestUrls,
+      trustedManifestUrls,
+      bundledPluginManifestUrls(),
+    );
+    return untrusted.filter((url) => !dismissedUrls.has(url));
+  }, [projectManifestUrls, trustedManifestUrls, dismissedUrls]);
+
+  const trust = useCallback(() => {
+    if (pendingUrls.length === 0) return;
+    const current = useDesktopSettingsStore.getState().desktopSettings;
+    useDesktopSettingsStore.getState().setDesktopSettings({
+      ...current,
+      pluginManifestUrls: mergeStringLists(
+        current.pluginManifestUrls,
+        pendingUrls,
+      ),
+    });
+  }, [pendingUrls]);
+
+  const dismiss = useCallback(() => {
+    if (pendingUrls.length === 0) return;
+    setDismissedUrls((previous) => {
+      const next = new Set(previous);
+      for (const url of pendingUrls) next.add(url);
+      return next;
+    });
+  }, [pendingUrls]);
+
+  return { pendingUrls, trust, dismiss };
 }
 
 /**
@@ -427,7 +502,7 @@ export function useSwipeSplitViewExclusivity(
 // load time rather than stored in Settings, so a baked-in plugin always loads
 // and cannot be removed by the user. The URL loader skips the scheme allow-list
 // applied to user/project URLs, so the desktop tauri:// origin is accepted.
-function bundledPluginManifestUrls(): string[] {
+export function bundledPluginManifestUrls(): string[] {
   if (typeof window === "undefined") return [];
   // Resolve against a base that always ends in "/" so a non-trailing-slash
   // BASE_URL (e.g. "/geolibre") cannot mangle the path into "/geolibreplugins".
@@ -443,14 +518,17 @@ function ensureExternalPluginsLoadedWithSettings(
   desktopSettings: ReturnType<
     typeof useDesktopSettingsStore.getState
   >["desktopSettings"],
-  projectPluginManifestUrls: string[],
   app: ReturnType<typeof createAppAPI>,
   options?: { force?: boolean },
 ): Promise<void> {
+  // Only the user's installed URLs (desktop settings) and the bundled drop-ins
+  // are auto-loaded. Project-supplied URLs are deliberately excluded here so
+  // opening a project never fetches or imports third-party plugin code; they
+  // reach this scan only after the user trusts them, at which point they are in
+  // desktopSettings.pluginManifestUrls (see useProjectPluginTrust / #1062).
   const pluginManifestUrls = mergeStringLists(
     bundledPluginManifestUrls(),
     desktopSettings.pluginManifestUrls,
-    projectPluginManifestUrls,
   );
   const loadKey = JSON.stringify({
     additionalPluginDirectories: desktopSettings.additionalPluginDirectories,
@@ -589,6 +667,7 @@ export function createAppAPI(
         styles,
         format,
         transparent,
+        version,
         ...tileOptions
       } = options;
       // TypeScript enforces these, but an untyped JS plugin can pass "" — an
@@ -607,6 +686,19 @@ export function createAppAPI(
       const resolvedStyles = styles ?? "";
       const resolvedFormat = format ?? "image/png";
       const resolvedTransparent = transparent ?? true;
+      const resolvedVersion = normalizeWmsVersion(version);
+      // Mirror setMapProjection's unrecognized-value warning so a typo'd
+      // version from an untyped JS plugin is visible instead of silently
+      // coerced. Valid shorthand in a recognized 1.x family (e.g. "1.3") is
+      // not warned about — it normalizes cleanly.
+      if (
+        version !== undefined &&
+        (typeof version !== "string" || !/^1\.\d/.test(version.trim()))
+      ) {
+        console.warn(
+          `[GeoLibre] addWmsLayer: unsupported WMS version "${String(version)}"; using "${resolvedVersion}".`,
+        );
+      }
       const tileUrl = createWmsTileUrl({
         endpoint: url,
         layers,
@@ -614,6 +706,7 @@ export function createAppAPI(
         format: resolvedFormat,
         transparent: resolvedTransparent,
         tileSize,
+        version: resolvedVersion,
       });
       return store.addTileLayer(
         name,
@@ -628,6 +721,7 @@ export function createAppAPI(
             styles: resolvedStyles,
             format: resolvedFormat,
             transparent: resolvedTransparent,
+            version: resolvedVersion,
           },
           ...tileOptions,
         },
