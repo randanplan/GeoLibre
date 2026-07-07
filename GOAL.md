@@ -68,6 +68,42 @@ Eine GeoLibre-basierte ÖTM-Aufnahme-App soll den aktuellen PDF-zentrierten Work
 - PDFs sind vektorhaltig; Analyse via **PyMuPDF** ist möglich.
 - Georeferenzierung soll über bekannte Mast-Koordinaten und zugehörige PDF-Punkte erfolgen.
 
+### 3.1 PDF-Struktur (analysiert mit PyMuPDF, Stand 2026-07-04)
+
+Die ÖTM-PDFs sind **GIS-generierte Vektorpläne** im Querformat (kein Scan). Jedes Blatt besteht aus **vier** horizontalen Bereichen:
+
+```text
+┌───────────────────────────────┬──────────────────┬──────────────────┬──────────────┐
+│         Hauptkarte            │     Legende      │ Detail-Info      │  Titelblock  │
+│   (variabler Anteil, 54–63 %) │ (Maßnahmen mit   │ (Typ/Nr./Fläche/ │  (Westnetz,  │
+│                               │  Flächensummen)  │  Pflege-Tabelle) │   Maßstab)   │
+└───────────────────────────────┴──────────────────┴──────────────────┴──────────────┘
+```
+
+Typische x-Grenzen (Beispiel 2006 Köln, pt):
+
+- Kartenrahmen rechts: x ≈ 2168 → Legende beginnt
+- `"Maßnahme/Pflegeeinheit …"`: x ≈ 2262 → Legendenkopf
+- `"Detail - Informationen"`: x ≈ 2726 → Detail-Tabelle beginnt
+- `"WESTNETZ"`: x ≈ 3287 → Titelblock beginnt
+
+**Kartenrahmen (Hauptkarte)** — durch exakte Vektorlinien begrenzt, losübergreifend konsistent:
+
+| Los                               | Rahmen (pt)            | Breite × Höhe (mm) |
+| --------------------------------- | ---------------------- | ------------------ |
+| 2009 Mönchengladbach-Grevenbroich | (71, 14) → (2430, 828) | ~832 × 287 mm      |
+| 2006 Köln                         | (71, 14) → (2168, 828) | ~740 × 287 mm      |
+| 2008 Düsseldorf-Neuss             | (71, 14) → (1643, 827) | ~555 × 287 mm      |
+
+Erkenntnisse:
+
+- **Höhe ist konstant** (~813 pt / ~287 mm) — DIN-A3-Querformat-Innenrahmen
+- **Breite variiert** je nach Trassenlänge des Blattes
+- **Linker Rand immer x ≈ 71 pt** (~25 mm) — fester Offset, losübergreifend
+- **Oberer Rand y ≈ 14 pt, unterer Rand y ≈ 828 pt** — ebenfalls konstant
+- Der Rahmen ist als vier einzelne Vektorlinien im PDF kodiert (erkennbar über `page.get_drawings()`)
+- Die Linien schließen exakt aneinander an → Rahmen kann zuverlässig als `clip_rect` für Rasterkonvertierung oder Geokalibrierung genutzt werden
+
 ## 4) Bereits bekannte Datenbasis
 
 Pfad: `c:\Users\randanplan\repos\.oetm`
