@@ -39,9 +39,13 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # OS CSPRNG for the per-launch Jupyter token (already an indirect dep).
-getrandom = "0.2"
+getrandom = "0.4"
+
+# Runtime WebKitGTK version check (already an indirect dep via tauri/wry).
+[target."cfg(target_os = \"linux\")".dependencies]
+webkit2gtk-sys = "2"

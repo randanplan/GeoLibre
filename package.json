@@ -25,9 +25,9 @@
     "lint": "eslint apps packages workers tests",
     "test": "npm run test:frontend",
     "test:frontend": "node --import tsx --test tests/*.test.ts",
-    "test:frontend:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"tests/**\" --test-coverage-exclude=\"e2e/**\" --test-coverage-exclude=\"**/*.config.*\" tests/*.test.ts",
+    "test:frontend:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-lines=78 --test-coverage-branches=78 --test-coverage-functions=63 --test-coverage-exclude=\"tests/**\" --test-coverage-exclude=\"e2e/**\" --test-coverage-exclude=\"**/*.config.*\" tests/*.test.ts",
     "test:backend": "python -m pytest backend/geolibre_server/tests",
-    "test:backend:coverage": "python -m pytest backend/geolibre_server/tests --cov=geolibre_server --cov-report=term-missing",
+    "test:backend:coverage": "python -m pytest backend/geolibre_server/tests --cov=geolibre_server --cov-report=term-missing --cov-fail-under=55",
     "test:worker": "npm run typecheck -w geolibre-viewer-worker && npm run typecheck -w geolibre-collab-worker",
     "test:e2e": "playwright test",
     "check:rust": "cargo check --manifest-path apps/geolibre-desktop/src-tauri/Cargo.toml",
@@ -43,13 +43,13 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.11.3",
-    "@playwright/test": "^1.60.0",
-    "@types/node": "^22.19.21",
-    "eslint": "^10.4.1",
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.1.0",
+    "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "tsx": "^4.22.4",
-    "typescript-eslint": "^8.61.0"
+    "tsx": "^4.23.0",
+    "typescript-eslint": "^8.63.0"
   },
   "overrides": {
     "sweepline-intersections": "^1.5.0",
