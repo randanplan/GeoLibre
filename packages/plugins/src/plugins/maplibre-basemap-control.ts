@@ -112,8 +112,19 @@ const registeredRasterLayers = new Map<string, string>();
 let styleChangeFallback: { attemptedUrl: string; previousUrl: string } | null =
   null;
 
+export const BASEMAP_CONTROL_PLUGIN_ID = "maplibre-gl-basemap-control";
+
+/**
+ * The live BasemapControl instance while the plugin is active, or null when it
+ * is deactivated. Mirrors getActiveTimeSliderControl; used by tests to assert
+ * the panel state seeded on (re)activation.
+ */
+export function getActiveBasemapControl(): BasemapControl | null {
+  return basemapControl;
+}
+
 export const maplibreBasemapControlPlugin: GeoLibrePlugin = {
-  id: "maplibre-gl-basemap-control",
+  id: BASEMAP_CONTROL_PLUGIN_ID,
   name: "Basemaps",
   version: "0.3.0",
   activate: (app: GeoLibreAppAPI) => {
@@ -142,19 +153,42 @@ export const maplibreBasemapControlPlugin: GeoLibrePlugin = {
       basemapControl = null;
       return false;
     }
-    basemapControl.setState({
-      activeBasemapId: getBasemapIdForStyleUrl(app.getActiveBasemap()),
-    });
-    // Re-link raster basemap layers restored from a reopened project so that a
-    // later switch to a style basemap or a removal can unregister them (the
-    // module state does not survive a new session).
+    // Re-link raster basemap layers restored from a reopened project (or kept
+    // from a previous activation in this session) so that a later switch to a
+    // style basemap or a removal can unregister them (the module state does not
+    // survive a new session).
     relinkRestoredRasterBasemaps();
+    // Seed the fresh control instance with every basemap already on the map —
+    // the active style basemap plus any stacked rasters we just relinked — so
+    // the reopened panel highlights them as active and a re-click on a stacked
+    // raster removes it. Without the raster ids the new instance only knows the
+    // style basemap and shows restored overlays as inactive. When rasters are
+    // stacked the map is in overlay mode, so restore that too.
+    const activeStyleId = getBasemapIdForStyleUrl(app.getActiveBasemap());
+    const stackedRasterIds = [...registeredRasterLayers.keys()];
+    const activeBasemapIds = [
+      ...new Set(
+        [activeStyleId, ...stackedRasterIds].filter(
+          (id): id is string => typeof id === "string",
+        ),
+      ),
+    ];
+    basemapControl.setState({
+      activeBasemapId: activeStyleId,
+      activeBasemapIds,
+      ...(stackedRasterIds.length > 0 ? { allowMultiple: true } : {}),
+    });
     setTimeout(() => basemapControl?.expand(), 0);
   },
   deactivate: (app: GeoLibreAppAPI) => {
     if (!basemapControl) return;
     cleanupRuntimeEnvListener();
-    unregisterAllRasterBasemaps(app);
+    // Closing the control must not throw away the stacked raster basemaps the
+    // user assembled — they are real layers in the Layers panel. Keep them in
+    // the store and only drop the module-level link tracking; a later
+    // reactivation relinks them from the store via relinkRestoredRasterBasemaps
+    // (the same path a reopened project takes). See #1113 follow-up.
+    registeredRasterLayers.clear();
     app.removeMapControl(basemapControl);
     basemapControl = null;
     // Drop any pending style-failure fallback so a later reactivation cannot
