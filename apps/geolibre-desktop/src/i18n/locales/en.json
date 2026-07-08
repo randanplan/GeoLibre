@@ -1087,7 +1087,9 @@
     "quickActions": "Quick actions",
     "copyGeoJson": "Copy as GeoJSON",
     "centerHere": "Center map here",
-    "zoomInHere": "Zoom in here"
+    "zoomInHere": "Zoom in here",
+    "viewInGoogleMaps": "View in Google Maps",
+    "viewInGoogleEarth": "View in Google Earth"
   },
   "onboarding": {
     "title": "Welcome to GeoLibre",
@@ -1613,6 +1615,8 @@
       "splitViewGrid2x3": "2 × 3 grid",
       "splitViewGrid3x3": "3 × 3 grid",
       "splitViewSync": "Sync views",
+      "viewInGoogleMaps": "View in Google Maps",
+      "viewInGoogleEarth": "View in Google Earth",
       "zoomIn": "Zoom In",
       "zoomOut": "Zoom Out",
       "sectionFiles": "Files",
