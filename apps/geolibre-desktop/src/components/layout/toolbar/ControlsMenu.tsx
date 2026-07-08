@@ -120,6 +120,7 @@ export function ControlsMenu({
     show("controls.atmosphereEffects") ||
     show("controls.spinGlobe") ||
     show("controls.graticule") ||
+    show("controls.sun") ||
     show("controls.directions") ||
     show("controls.reverseGeocode");
   // Whether the middle group (panels) has any visible item. The separator that
@@ -173,6 +174,15 @@ export function ControlsMenu({
               onPreview={onPreviewEffectsSettings}
               onCommit={onCommitEffectsSettings}
             />
+          )}
+          {show("controls.sun") && (
+            <DropdownMenuItem
+              title={t("toolbar.item.sunTooltip")}
+              onSelect={panels.sun.toggle}
+            >
+              {t("toolbar.item.sun")}
+              {panels.sun.visible ? " ✓" : ""}
+            </DropdownMenuItem>
           )}
           {show("controls.spinGlobe") && (
             <DropdownMenuItem onSelect={handleSpinGlobe}>

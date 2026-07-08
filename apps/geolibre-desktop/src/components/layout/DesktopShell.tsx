@@ -20,6 +20,7 @@ import {
   restoreEffects,
   restoreLidarLayers,
   restorePlanetaryComputerLayers,
+  reattachSun,
   restoreRasterLayers,
   restoreThreeDTilesLayers,
   restoreVectorLayers,
@@ -111,6 +112,7 @@ import {
 import { AttributeTable } from "../panels/AttributeTable";
 import { LayerPanel } from "../panels/LayerPanel";
 import { FloatingPanels } from "../panels/FloatingPanels";
+import { SunPanel } from "../panels/SunPanel";
 import {
   PluginRightPanel,
   PLUGIN_PANEL_DEFAULT_WIDTH,
@@ -893,6 +895,13 @@ export function DesktopShell({
       pluginManager.isActive(EFFECTS_PLUGIN_ID),
       useAppStore.getState().projectPlugins?.settings?.[EFFECTS_PLUGIN_ID],
     );
+    // The sun simulation reads/writes native map layers, so it must re-bind to
+    // the (possibly new) map instance after a map re-init or basemap change.
+    // Reattach only — it must NOT derive open/closed state here, which would
+    // reset a locally-opened panel on an unrelated basemap swap or remote edit.
+    // Project loads open/close it via the plugin's applyProjectState (invoked by
+    // restoreProjectState above).
+    reattachSun(appAPI);
     // Rebind the directions tool to the (possibly new) map instance after a
     // map re-init, since restoreProjectState skips an already-active plugin.
     restoreDirections(appAPI, pluginManager.isActive(DIRECTIONS_PLUGIN_ID));
@@ -1748,6 +1757,9 @@ export function DesktopShell({
           </SectionErrorBoundary>
           <SectionErrorBoundary label="Plugin floating panels">
             <FloatingPanels />
+          </SectionErrorBoundary>
+          <SectionErrorBoundary label="Sun simulation panel">
+            <SunPanel />
           </SectionErrorBoundary>
           {/* Rendered here (not in TopToolbar) so the dialog the status badge
               reopens stays mounted even in toolbar-hidden layouts (#754). */}
