@@ -19,6 +19,7 @@ import {
 } from "./duckdb-vector-guard";
 import { ensureGpkgFeatureCount } from "./gpkg-ogr-contents";
 import { isLikelyGeoPackage, loadGeoPackageVectorFile } from "./gpkg-reader";
+import { prjSidecarCrs } from "./prj-sidecar";
 import { selectDuckDbBundle } from "./duckdb-wasm-bundles";
 import { getSpatialExtensionPath } from "./spatial-extension-config";
 
@@ -408,12 +409,18 @@ function crsSql(fileName: string, includeWkt: boolean): string {
 
 /**
  * Resolve the source CRS of a vector file as a string ST_Transform accepts —
- * `AUTHORITY:CODE` when GDAL identified one, otherwise the raw WKT definition, or
- * null when the file carries no usable CRS (so reprojection is skipped).
+ * `AUTHORITY:CODE` when GDAL identified one, otherwise the raw WKT definition,
+ * else a shapefile's `.prj` sidecar text, or null when the file carries no
+ * usable CRS (so reprojection is skipped).
+ *
+ * `prjCrs` is the `.prj` sidecar WKT captured by {@link prjSidecarCrs} before
+ * the file buffers were registered (which detaches them), passed in because it
+ * can no longer be read from `file.siblingFiles` here.
  */
 async function readSourceCrs(
   connection: duckdb.AsyncDuckDBConnection,
   file: DuckDbVectorFile,
+  prjCrs: string | null,
 ): Promise<string | null> {
   // GeoParquet CRS is not read via ST_Read_Meta, so reprojection is skipped.
   // A spec-valid GeoParquet file not stored in WGS84 will render with wrong
@@ -433,6 +440,14 @@ async function readSourceCrs(
     try {
       row = rowsFromResult(await connection.query(crsSql(file.name, false)))[0];
     } catch (retryErr) {
+      // ST_Read_Meta cannot materialize this file's CRS metadata at all. Some
+      // GDAL/PROJ builds (notably duckdb-wasm) throw "cannot be formatted as
+      // WKT1 TOWGS84 parameters" for a datum whose transform to WGS84 is
+      // grid-based rather than a 7-parameter shift (e.g. OSGB36 / EPSG:27700),
+      // which fails even the auth-code-only query. A shapefile still carries its
+      // CRS in the `.prj` sidecar, so reproject from that before giving up
+      // (issue #1148).
+      if (prjCrs) return prjCrs;
       console.warn(
         "[GeoLibre] Could not read CRS metadata; reprojection skipped.",
         retryErr,
@@ -440,15 +455,16 @@ async function readSourceCrs(
       return null;
     }
   }
-  if (!row) return null;
+  if (!row) return prjCrs;
   const authName =
     typeof row.auth_name === "string" ? row.auth_name.trim() : "";
   const authCode = row.auth_code != null ? String(row.auth_code).trim() : "";
   if (authName && authCode) return `${authName.toUpperCase()}:${authCode}`;
   // No EPSG identity: fall back to the raw WKT so a projected file without a
-  // recognised authority code still reprojects (issue #1121).
+  // recognised authority code still reprojects (issue #1121), and to the `.prj`
+  // sidecar when even the WKT field is empty (issue #1148).
   const wkt = typeof row.wkt === "string" ? row.wkt.trim() : "";
-  return wkt || null;
+  return wkt || prjCrs;
 }
 
 function toFeatureCollection(
@@ -612,6 +628,13 @@ export async function loadDuckDbVectorFile(
   const connection = await db.connect();
 
   try {
+    // Capture the `.prj` sidecar CRS before registering the file buffers, which
+    // detaches each sibling's ArrayBuffer (transferred to the worker) and would
+    // leave the `.prj` unreadable by the reprojection fallback (issue #1148).
+    // Inside the try so the finally still closes the connection if it throws.
+    // `prjSidecarCrs` is `.shp`-scoped, so a non-shapefile's siblings are safe.
+    const prjCrs = prjSidecarCrs(file);
+
     await registerVectorFileBuffers(db, file);
     await ensureSpatialExtension(
       db,
@@ -639,7 +662,7 @@ export async function loadDuckDbVectorFile(
     // surface-WKB fallback below can reuse it.
     const sourceCrs =
       options.overrideSourceCrs?.trim() ||
-      (await readSourceCrs(connection, file));
+      (await readSourceCrs(connection, file, prjCrs));
 
     // Tracks whether the large-dataset guard already confirmed, so the
     // surface-WKB fallback does not prompt a second time (or skip it entirely

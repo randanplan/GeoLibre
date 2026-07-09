@@ -416,21 +416,83 @@ fn read_source_crs(conn: &Connection, options: &NativeVectorOptions) -> Option<S
          FROM ST_Read_Meta({})",
         quote_sql_string(&options.path.replace('\\', "/"))
     );
-    conn.query_row(&meta_sql, [], |row| {
-        let auth_name: Option<String> = row.get(0)?;
-        let auth_code: Option<String> = row.get(1)?;
-        Ok((auth_name, auth_code))
-    })
-    .ok()
-    .and_then(|(auth_name, auth_code)| {
-        let auth_name = auth_name?.trim().to_ascii_uppercase();
-        let auth_code = auth_code?.trim().to_string();
-        if auth_name.is_empty() || auth_code.is_empty() {
-            None
-        } else {
-            Some(format!("{auth_name}:{auth_code}"))
+    let auth_crs = conn
+        .query_row(&meta_sql, [], |row| {
+            let auth_name: Option<String> = row.get(0)?;
+            let auth_code: Option<String> = row.get(1)?;
+            Ok((auth_name, auth_code))
+        })
+        .ok()
+        .and_then(|(auth_name, auth_code)| {
+            let auth_name = auth_name?.trim().to_ascii_uppercase();
+            let auth_code = auth_code?.trim().to_string();
+            if auth_name.is_empty() || auth_code.is_empty() {
+                None
+            } else {
+                Some(format!("{auth_name}:{auth_code}"))
+            }
+        });
+    if auth_crs.is_some() {
+        return auth_crs;
+    }
+    // ST_Read_Meta resolved no EPSG authority code (e.g. a custom ESRI `.prj`
+    // without an AUTHORITY tag). Fall back to the shapefile's `.prj` sidecar
+    // WKT, which ST_Transform accepts, mirroring the DuckDB-WASM loader so a
+    // projected shapefile still reprojects instead of loading in source
+    // coordinates (issue #1148).
+    if options.extension == "shp" {
+        return read_prj_sidecar_crs(&options.path);
+    }
+    None
+}
+
+/// The WKT text of a shapefile's `.prj` sidecar, or `None` when it is absent or
+/// empty. Used as the CRS fallback when `ST_Read_Meta` reports no authority code.
+fn read_prj_sidecar_crs(shp_path: &str) -> Option<String> {
+    let path = Path::new(shp_path);
+    // Fast path: the sidecar usually shares the `.shp`'s exact base name with a
+    // `.prj` or `.PRJ` extension.
+    for extension in ["prj", "PRJ"] {
+        if let Some(crs) = read_nonempty_trimmed(&path.with_extension(extension)) {
+            return Some(crs);
         }
-    })
+    }
+    // Fallback for mixed-case naming (e.g. `Foo.Prj`, or a `Foo.shp` whose
+    // sidecar is `foo.PRJ`) on a case-sensitive filesystem: scan the directory
+    // for a file whose stem and `prj` extension both match case-insensitively.
+    let stem = path.file_stem()?.to_str()?;
+    let dir = path.parent()?;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let entry_path = entry.path();
+        let stem_matches = entry_path
+            .file_stem()
+            .and_then(|entry_stem| entry_stem.to_str())
+            .is_some_and(|entry_stem| entry_stem.eq_ignore_ascii_case(stem));
+        let is_prj = entry_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("prj"));
+        if stem_matches && is_prj {
+            if let Some(crs) = read_nonempty_trimmed(&entry_path) {
+                return Some(crs);
+            }
+        }
+    }
+    None
+}
+
+/// The trimmed contents of a file, or `None` when it cannot be read or is empty.
+fn read_nonempty_trimmed(path: &Path) -> Option<String> {
+    // Decode lossily rather than with `read_to_string` so a `.prj` carrying a
+    // stray non-UTF-8 byte still yields its WKT instead of silently reverting to
+    // the pre-fix "no reprojection" behavior.
+    let bytes = std::fs::read(path).ok()?;
+    let trimmed = String::from_utf8_lossy(&bytes).trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn read_geoparquet_source_crs(conn: &Connection, options: &NativeVectorOptions) -> Option<String> {
@@ -851,6 +913,80 @@ mod tests {
         let options = native_options(path.clone(), None, None).expect("native options");
         assert_eq!(options.path, path);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_prj_sidecar_crs_returns_trimmed_wkt() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "geolibre-native-prj-{suffix}-{}",
+            std::process::id()
+        ));
+        let shp_path = base.with_extension("shp");
+        let prj_path = base.with_extension("prj");
+        std::fs::write(
+            &prj_path,
+            "  PROJCS[\"British_National_Grid\",GEOGCS[\"GCS_OSGB_1936\"]]\n",
+        )
+        .expect("write prj sidecar");
+
+        let crs = read_prj_sidecar_crs(&shp_path.to_string_lossy())
+            .expect("prj sidecar resolves a CRS");
+        assert_eq!(
+            crs,
+            "PROJCS[\"British_National_Grid\",GEOGCS[\"GCS_OSGB_1936\"]]"
+        );
+
+        let _ = std::fs::remove_file(&prj_path);
+    }
+
+    #[test]
+    fn read_prj_sidecar_crs_is_none_when_absent_or_empty() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "geolibre-native-prj-missing-{suffix}-{}",
+            std::process::id()
+        ));
+        let shp_path = base.with_extension("shp");
+
+        assert!(read_prj_sidecar_crs(&shp_path.to_string_lossy()).is_none());
+
+        let prj_path = base.with_extension("prj");
+        std::fs::write(&prj_path, "   \n").expect("write empty prj sidecar");
+        assert!(read_prj_sidecar_crs(&shp_path.to_string_lossy()).is_none());
+        let _ = std::fs::remove_file(&prj_path);
+    }
+
+    #[test]
+    fn read_prj_sidecar_crs_matches_mixed_case_extension() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before Unix epoch")
+            .as_nanos();
+        // A unique per-test subdirectory so the directory scan only sees this
+        // file set, independent of other tests sharing the temp dir.
+        let dir = std::env::temp_dir().join(format!(
+            "geolibre-native-prj-case-{suffix}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        // A mixed-case sidecar extension AND basename (`hotspots.shp` vs
+        // `Hotspots.PRJ`) that neither the `prj` nor `PRJ` fast path matches.
+        let shp_path = dir.join("hotspots.shp");
+        let prj_path = dir.join("Hotspots.PRJ");
+        std::fs::write(&prj_path, "PROJCS[\"OSGB\"]\n").expect("write prj sidecar");
+
+        let crs = read_prj_sidecar_crs(&shp_path.to_string_lossy())
+            .expect("mixed-case prj sidecar resolves a CRS");
+        assert_eq!(crs, "PROJCS[\"OSGB\"]");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
