@@ -1356,25 +1356,43 @@ export class MapController {
 
   highlightFeature(
     layer: GeoLibreLayer | undefined,
-    featureId: string | null,
+    featureId: string | string[] | null,
     options: { fit?: boolean } = {},
   ): void {
     if (!this.isStyleReady()) return;
 
-    if (!layer?.geojson || !featureId) {
+    const ids = (
+      Array.isArray(featureId) ? featureId : featureId ? [featureId] : []
+    ).filter((id) => id != null);
+
+    if (!layer?.geojson || ids.length === 0) {
       this.syncHighlight(EMPTY_HIGHLIGHT);
       return;
     }
 
-    const feature = this.findFeature(layer, featureId);
-    if (!feature?.geometry) {
+    // Index by id once (O(n)) then look each id up in O(1); a Shift-range of
+    // thousands of rows on a large layer would otherwise be O(selected × total)
+    // per highlight update, on the main thread, on every selection change.
+    const featureById = new Map<string, Feature>(
+      layer.geojson.features.map((feature, index) => [
+        String(feature.id ?? index),
+        feature,
+      ]),
+    );
+    const features = ids
+      .map((id) => featureById.get(id))
+      .filter(
+        (feature): feature is Feature =>
+          feature?.geometry != null,
+      );
+    if (features.length === 0) {
       this.syncHighlight(EMPTY_HIGHLIGHT);
       return;
     }
 
     const featureCollection: FeatureCollection = {
       type: "FeatureCollection",
-      features: [feature as Feature<Geometry>],
+      features: features as Feature<Geometry>[],
     };
     this.syncHighlight(featureCollection);
 
@@ -1408,15 +1426,6 @@ export class MapController {
     } catch {
       this.map.once("idle", () => this.enforceProjection());
     }
-  }
-
-  private findFeature(
-    layer: GeoLibreLayer,
-    featureId: string,
-  ): Feature | undefined {
-    return layer.geojson?.features.find(
-      (feature, index) => String(feature.id ?? index) === featureId,
-    );
   }
 
   private fitFeature(featureCollection: FeatureCollection): void {

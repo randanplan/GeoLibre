@@ -329,6 +329,20 @@ function isWmsLayer(layer: GeoLibreLayer): boolean {
   return layer.type === "wms";
 }
 
+/**
+ * The features to highlight for the current selection: the full multi-select
+ * set when present, otherwise the single anchor (or none). Shared by the
+ * selection effect and the map/basemap style-load handlers so a style reload
+ * never collapses a multi-selection down to its anchor.
+ */
+function resolveHighlightIds(state: {
+  selectedFeatureIds: string[];
+  selectedFeatureId: string | null;
+}): string[] {
+  if (state.selectedFeatureIds.length > 0) return state.selectedFeatureIds;
+  return state.selectedFeatureId ? [state.selectedFeatureId] : [];
+}
+
 function duckDBBridge(): GeoLibreDuckDBBridge | undefined {
   return typeof window === "undefined"
     ? undefined
@@ -749,6 +763,7 @@ export const MapCanvas = memo(function MapCanvas({
   const layerGroups = useAppStore((s) => s.layerGroups);
   const selectedLayerId = useAppStore((s) => s.selectedLayerId);
   const selectedFeatureId = useAppStore((s) => s.selectedFeatureId);
+  const selectedFeatureIds = useAppStore((s) => s.selectedFeatureIds);
   const identifyLayerId = useAppStore((s) => s.identifyLayerId);
   const zoomToSelectedFeature = useAppStore((s) => s.ui.zoomToSelectedFeature);
   const selectFeature = useAppStore((s) => s.selectFeature);
@@ -821,7 +836,7 @@ export const MapCanvas = memo(function MapCanvas({
       mc.setBasemapOpacity(state.basemapOpacity);
       mc.highlightFeature(
         state.layers.find((layer) => layer.id === state.selectedLayerId),
-        state.selectedFeatureId,
+        resolveHighlightIds(state),
       );
       updateView();
       onControllerReadyRef.current?.();
@@ -895,7 +910,7 @@ export const MapCanvas = memo(function MapCanvas({
       controller.current?.setBasemapOpacity(state.basemapOpacity);
       controller.current?.highlightFeature(
         state.layers.find((layer) => layer.id === state.selectedLayerId),
-        state.selectedFeatureId,
+        resolveHighlightIds(state),
       );
       onControllerReadyRef.current?.();
     });
@@ -941,9 +956,19 @@ export const MapCanvas = memo(function MapCanvas({
 
   useEffect(() => {
     const layer = layers.find((item) => item.id === selectedLayerId);
+    // Highlight the full multi-selection (attribute table Ctrl/Shift picks).
+    const highlightIds = resolveHighlightIds({
+      selectedFeatureIds,
+      selectedFeatureId,
+    });
+    // Key on the whole selection set, not just the anchor: a Shift-range pick
+    // keeps the anchor fixed while adding features, so an anchor-only key would
+    // never re-fit. Any change to the set re-triggers the fit to frame them all.
+    // Join on NUL — a byte that can't appear in a feature id — so ids containing
+    // commas (e.g. ["a,b"] vs ["a","b"]) don't collide into the same key.
     const nextKey =
-      selectedLayerId && selectedFeatureId
-        ? `${selectedLayerId}:${selectedFeatureId}`
+      selectedLayerId && highlightIds.length > 0
+        ? `${selectedLayerId}:${highlightIds.join("\u0000")}`
         : null;
     const shouldFit = Boolean(
       zoomToSelectedFeature &&
@@ -951,7 +976,7 @@ export const MapCanvas = memo(function MapCanvas({
       nextKey !== previousSelectedFeatureKey.current,
     );
     previousSelectedFeatureKey.current = nextKey;
-    controller.current?.highlightFeature(layer, selectedFeatureId, {
+    controller.current?.highlightFeature(layer, highlightIds, {
       fit: shouldFit,
     });
     if (layer && isDuckDBQueryLayer(layer)) {
@@ -971,7 +996,13 @@ export const MapCanvas = memo(function MapCanvas({
       );
       previousDuckDBSelectionLayerId.current = null;
     }
-  }, [layers, selectedLayerId, selectedFeatureId, zoomToSelectedFeature]);
+  }, [
+    layers,
+    selectedLayerId,
+    selectedFeatureId,
+    selectedFeatureIds,
+    zoomToSelectedFeature,
+  ]);
 
   useEffect(() => {
     const map = controller.current?.getMap();

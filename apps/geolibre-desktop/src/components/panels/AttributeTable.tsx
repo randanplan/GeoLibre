@@ -92,6 +92,7 @@ import {
   fieldReference,
   type CalcOutputType,
 } from "../../lib/attribute-expression";
+import { computeRowSelection } from "../../lib/attribute-selection";
 import {
   AREA_UNITS,
   detectGeometryFamilies,
@@ -275,7 +276,9 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   const attributeFilter = useAppStore((s) => s.attributeFilter);
   const setAttributeFilter = useAppStore((s) => s.setAttributeFilter);
   const selectedFeatureId = useAppStore((s) => s.selectedFeatureId);
+  const selectedFeatureIds = useAppStore((s) => s.selectedFeatureIds);
   const selectFeature = useAppStore((s) => s.selectFeature);
+  const selectFeatures = useAppStore((s) => s.selectFeatures);
   const attributeTableOpen = useAppStore((s) => s.ui.attributeTableOpen);
   const setAttributeTableOpen = useAppStore((s) => s.setAttributeTableOpen);
   const setDashboardOpen = useAppStore((s) => s.setDashboardOpen);
@@ -294,6 +297,9 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     direction: "asc",
   });
   const [columnWidths, setColumnWidths] = useState<ColumnWidths>({});
+  // "all" shows every feature; "selected" restricts the table to the current
+  // multi-selection (the Show All / Show Selected dropdown).
+  const [featureView, setFeatureView] = useState<"all" | "selected">("all");
   const [tableHeight, setTableHeight] = useState(DEFAULT_TABLE_HEIGHT);
   // Collapsed shows only the toolbar header, hiding the table body, while the
   // panel stays open. Distinct from closing the panel entirely (the X button).
@@ -462,8 +468,24 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     if (!attributeTableOpen) setCollapsed(false);
   }, [attributeTableOpen]);
 
+  // "Show Selected Features" over an empty selection is a blank table; fall back
+  // to showing everything once nothing is selected (e.g. after clearing or
+  // switching layers).
+  useEffect(() => {
+    if (selectedFeatureIds.length === 0) setFeatureView("all");
+  }, [selectedFeatureIds.length]);
+
+  // O(1) lookups for the multi-selection while rendering thousands of rows.
+  const selectedIdSet = useMemo(
+    () => new Set(selectedFeatureIds),
+    [selectedFeatureIds],
+  );
+
   const filterLower = attributeFilter.toLowerCase();
   const filtered = attributeRows.filter(({ properties, featureId }) => {
+    // "Show Selected Features" restricts the table to the current selection.
+    if (featureView === "selected" && !selectedIdSet.has(featureId))
+      return false;
     if (!filterLower) return true;
     const props = JSON.stringify(properties).toLowerCase();
     return featureId.includes(filterLower) || props.includes(filterLower);
@@ -480,6 +502,34 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     const result = compareAttributeValues(aValue, bValue);
     return sort.direction === "asc" ? result : -result;
   });
+
+  // Row selection with keyboard modifiers (plain / Ctrl-toggle / Shift-range /
+  // Shift+Ctrl merge). The branching lives in the pure `computeRowSelection`
+  // helper so it can be unit-tested; here we just feed it the current state.
+  const handleRowClick = (
+    featureId: string,
+    event: ReactMouseEvent<HTMLTableRowElement>,
+  ) => {
+    const additive = event.ctrlKey || event.metaKey;
+    const range = event.shiftKey;
+    const { ids, anchor } = computeRowSelection({
+      featureId,
+      sortedIds: sorted.map((row) => row.featureId),
+      selectedIds: selectedFeatureIds,
+      anchorId: selectedFeatureId,
+      additive,
+      range,
+    });
+    // A plain click ("make this the sole selection") while reviewing the
+    // "Show Selected" subset would otherwise shrink the table to that one row.
+    // Drop back to "Show All" so the pick lands in the full table instead of
+    // stranding the user on a single-row view. Modifier clicks are deliberate
+    // refinements of the shown set, so they stay in the selected view.
+    if (!additive && !range && featureView === "selected") {
+      setFeatureView("all");
+    }
+    selectFeatures(ids, anchor);
+  };
 
   // Row virtualization: only the rows in (and just around) the viewport are
   // mounted, so opening the table on a layer with tens of thousands of features
@@ -998,7 +1048,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     calcMode === "create"
       ? calcNewNameTrimmed !== "" && !calcNameCollides
       : calcTargetField !== "";
-  const calcHasSelection = Boolean(selectedFeatureId);
+  const calcHasSelection = selectedFeatureIds.length > 0;
 
   // Live preview of the expression against a sample feature: the selected row
   // when present (and a single feature is targeted), else the first row. A
@@ -1087,8 +1137,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     const targetName =
       calcMode === "create" ? calcNewNameTrimmed : calcTargetField;
     const scope =
-      calcSelectedOnly && selectedFeatureId
-        ? new Set([selectedFeatureId])
+      calcSelectedOnly && selectedFeatureIds.length > 0
+        ? new Set(selectedFeatureIds)
         : undefined;
     const result = calculateField(
       layer,
@@ -1555,13 +1605,33 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           />
           {t("attributeTable.zoomToSelection")}
         </label>
+        {/* A native <select> (not the @geolibre/ui Select, which hardcodes h-9
+            and w-full) so it matches the h-7 toolbar and self-sizes to its
+            content instead of clipping the longest label. */}
+        <select
+          className="h-7 shrink-0 rounded-md border border-input bg-background px-2 text-xs shadow-xs transition-colors focus-visible:border-ring focus-visible:outline-none"
+          aria-label={t("attributeTable.featureViewAria")}
+          value={featureView}
+          onChange={(event) =>
+            setFeatureView(event.target.value as "all" | "selected")
+          }
+        >
+          <option value="all">{t("attributeTable.showAllFeatures")}</option>
+          {/* Disabled when nothing is selected so the table can't be switched
+              to an empty "selected" view it wouldn't auto-recover from. */}
+          <option value="selected" disabled={selectedFeatureIds.length === 0}>
+            {t("attributeTable.showSelectedFeatures", {
+              count: selectedFeatureIds.length,
+            })}
+          </option>
+        </select>
         <Button
           variant="outline"
           size="icon"
           className="h-7 w-7"
           title={t("attributeTable.clearSelectedFeature")}
           aria-label={t("attributeTable.clearSelectedFeature")}
-          disabled={!selectedFeatureId}
+          disabled={selectedFeatureIds.length === 0}
           onClick={() => selectFeature(null)}
         >
           <MousePointerSquareDashed className="h-3.5 w-3.5" />
@@ -1647,16 +1717,21 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 ) : null}
                 {virtualRows.map((virtualRow) => {
                   const { featureId, properties } = sorted[virtualRow.index];
-                  const selected = selectedFeatureId === featureId;
+                  const selected = selectedIdSet.has(featureId);
                   return (
                     <TableRow
                       key={featureId}
                       data-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
                       data-state={selected ? "selected" : undefined}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        selectFeature(featureId);
+                      className="cursor-pointer select-none"
+                      // Shift-click would otherwise select the page text between
+                      // rows; suppress that so range picks stay clean.
+                      onMouseDown={(event) => {
+                        if (event.shiftKey) event.preventDefault();
+                      }}
+                      onClick={(event) => {
+                        handleRowClick(featureId, event);
                       }}
                     >
                       <TableCell>{featureId}</TableCell>
