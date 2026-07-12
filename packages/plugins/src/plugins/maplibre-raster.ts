@@ -44,21 +44,32 @@ const SAMPLE_RASTER_DATASETS: RasterSampleDataset[] = [
   {
     label: "Land cover",
     url: "https://data.source.coop/giswqs/opengeos/nlcd_2021_land_cover_30m.tif",
+    attribution: "U.S. Geological Survey (USGS)",
   },
   {
     label: "Elevation (DEM)",
     url: "https://data.source.coop/giswqs/opengeos/dem.tif",
+    attribution: "U.S. Geological Survey (USGS)",
+  },
+  {
+    // Global ocean/land bathymetry: a single-band DEM good for the colormap
+    // and hillshade modes. Attribution feeds the map's attribution control
+    // while the layer is visible (upstream RasterSampleDataset.attribution).
+    label: "Bathymetry (GEBCO)",
+    url: "https://data.source.coop/giswqs/gebco-bathymetry/gebco_2026/gebco_2026.tif",
+    attribution: "GEBCO Compilation Group (2026)",
   },
   {
     // A multiband Sentinel-2 L2A scene: good for RGB composites and the
     // normalized-difference index mode (NDVI and friends).
     label: "Sentinel-2 (multiband)",
     url: "https://data.source.coop/opengeos/geoai/S2C-MSIL2A-20250920T162001-subset.tif",
+    attribution: "Copernicus Sentinel data (ESA)",
   },
 ];
 
 // This type mirrors undocumented private members of RasterControl from
-// maplibre-gl-raster (re-verified against v0.6.3). All access is optional (?.)
+// maplibre-gl-raster (re-verified against v0.10.1). All access is optional (?.)
 // so a rename in a future release degrades to a no-op rather than a crash --
 // re-verify these names AND the .mlr-control-close selector in
 // wireRasterCloseButton when bumping the dependency.
@@ -181,7 +192,7 @@ export function setNonTiledRasterHandler(
 }
 
 /** Whether a raster load error is the upstream "striped, not tiled" failure.
- * maplibre-gl-raster (v0.6.3) rejects non-tiled GeoTIFFs with a message
+ * maplibre-gl-raster (re-verified against v0.10.1) rejects non-tiled GeoTIFFs with a message
  * containing "not tiled"; this is the only signal it exposes, so the match is
  * coupled to that wording. Re-verify it (and broaden if needed) when bumping the
  * dependency -- a reworded message degrades to the plain error, not a crash. */
@@ -610,7 +621,7 @@ function createRasterControl(
   });
   // syncRasterLayersToStore re-reads getState().collapsed when these fire.
   // Safe: expand()/collapse() delegate to toggle(), which flips
-  // _state.collapsed BEFORE emitting the event (verified against v0.6.3) --
+  // _state.collapsed BEFORE emitting the event (re-verified against v0.10.1) --
   // re-verify that ordering when bumping the dependency.
   const panelStateSyncHandler: RasterControlEventHandler = () =>
     syncRasterLayersToStoreForRuntime(control);
@@ -712,7 +723,7 @@ function patchWebRasterOverlayFactory(
     };
   };
 
-  // maplibre-gl-raster v0.6.3 calls `_deps.removeOverlay(this._map, this._overlay)`
+  // maplibre-gl-raster (re-verified against v0.10.1) calls `_deps.removeOverlay(this._map, this._overlay)`
   // from its LayerManager teardown (after the last raster is removed / the
   // control is destroyed); re-verify this hook exists when bumping the
   // dependency. Even if a future version stopped calling it, the control still
