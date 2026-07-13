@@ -44,6 +44,7 @@ import {
   Play,
   RefreshCw,
   Save,
+  Scan,
   Search,
   Server,
   ServerOff,
@@ -115,7 +116,7 @@ function parameterKind(param: WhiteboxToolParameter): string {
       ? (schemaObject.dataset as Record<string, unknown>)
       : {};
   const dataKind = String(
-    param.data_kind ?? dataset.kind ?? param.type ?? "",
+    param.data_kind ?? schemaObject.data_kind ?? dataset.kind ?? param.type ?? "",
   ).toLowerCase();
   const role = String(param.io_role ?? schemaObject.kind ?? "").toLowerCase();
   if (role === "input") return datasetParameterKind(dataKind, "in");
@@ -177,6 +178,21 @@ function downloadBytes(bytes: Uint8Array, filename: string): void {
 function isDataInputParameter(param: WhiteboxToolParameter): boolean {
   return ["raster_in", "vector_in", "lidar_in", "file_in"].includes(
     parameterKind(param),
+  );
+}
+
+// A `bbox` string param paired with a `bbox_crs` param is the geographic extent
+// of a subset tool, so the field can offer a "Use map extent" shortcut that
+// fills both from the current map view (GeoLibre#1213). Matching on the pair
+// covers every COG/WMS/XYZ (and future) extractor without hard-coding tool ids.
+function isMapExtentParameter(
+  tool: WhiteboxTool,
+  param: WhiteboxToolParameter,
+): boolean {
+  return (
+    param.name === "bbox" &&
+    parameterKind(param) === "string" &&
+    Boolean(tool.params?.some((other) => other.name === "bbox_crs"))
   );
 }
 
@@ -806,6 +822,43 @@ export function ProcessingDialog({
     setValues((prev) => ({ ...prev, [name]: value }));
   };
 
+  // Fill a subset tool's `bbox` (and companion `bbox_crs`) from the current map
+  // view (GeoLibre#1213). The map reads in EPSG:4326, so the bbox is written as
+  // WGS84 `west,south,east,north` and the CRS is set to 4326 in the same gesture
+  // to keep the pair consistent (a stale `bbox_crs` would misread the extent).
+  const handleUseMapExtent = () => {
+    // Clear any stale banner (e.g. a prior "map not ready") so a later success
+    // doesn't leave it lingering, mirroring RasterSubsetPanel.handleUseView.
+    setError(null);
+    const bounds = mapControllerRef.current?.readView().bbox;
+    if (!bounds) {
+      setError(t("processing.whitebox.mapExtentUnavailable"));
+      return;
+    }
+    const [west, south, east, north] = bounds;
+    // getBounds() is not normalized: a view wrapping 180° yields west >= east,
+    // and at low zoom (multiple world copies) the corners can fall outside
+    // ±180°/±90° while still ordered. Either produces a box the subset
+    // extractors mis-clip or reject, so block it rather than filling a silently
+    // wrong bbox, matching RasterSubsetPanel.parseBbox's ordering + range checks.
+    if (
+      !(west < east) ||
+      !(south < north) ||
+      west < -180 ||
+      east > 180 ||
+      south < -90 ||
+      north > 90
+    ) {
+      setError(t("processing.whitebox.mapExtentInvalid"));
+      return;
+    }
+    const fmt = (value: number) => Number(value.toFixed(6)).toString();
+    updateValue("bbox", bounds.map(fmt).join(","));
+    // Store as a string to match the file's convention that every int/double
+    // field value is a string (NumberStepperInput always emits one).
+    updateValue("bbox_crs", String(4326));
+  };
+
   const handleRunLocalChange = (nextRunLocal: boolean) => {
     setRunLocal(nextRunLocal);
     // A `vector_out` param holds an output-format string in WASM mode but a
@@ -1326,6 +1379,11 @@ export function ProcessingDialog({
                       onPickFile={(fileName, bytes) =>
                         handlePickInputFile(param.name, fileName, bytes)
                       }
+                      onUseMapExtent={
+                        isMapExtentParameter(selectedTool, param)
+                          ? handleUseMapExtent
+                          : undefined
+                      }
                     />
                   ))
                 )}
@@ -1411,6 +1469,9 @@ interface ParameterFieldProps {
   layers: GeoLibreLayer[];
   onChange: (value: unknown) => void;
   onPickFile?: (fileName: string, bytes: Uint8Array) => void;
+  /** When set, renders a "Use map extent" button that fills this bbox field
+   * (and its companion CRS) from the current map view. */
+  onUseMapExtent?: () => void;
   toolId: string;
   runLocal: boolean;
   value: unknown;
@@ -1421,6 +1482,7 @@ function ParameterField({
   layers,
   onChange,
   onPickFile,
+  onUseMapExtent,
   toolId,
   runLocal,
   value,
@@ -1466,6 +1528,32 @@ function ParameterField({
             </option>
           ))}
         </Select>
+      ) : onUseMapExtent ? (
+        // Checked before the path/data-input branches: once isMapExtentParameter
+        // has identified this bbox field, the "Use map extent" affordance should
+        // always win, even if the param's description happens to contain a word
+        // (path/file/…) that isPathParameter's heuristic would otherwise match.
+        <div className="grid gap-1.5">
+          <Input
+            id={`whitebox-${param.name}`}
+            type="text"
+            value={valueText}
+            placeholder={t("processing.whitebox.mapExtentPlaceholder")}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              onChange(event.target.value)
+            }
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="justify-self-start"
+            onClick={onUseMapExtent}
+          >
+            <Scan className="h-3.5 w-3.5" aria-hidden="true" />
+            {t("processing.whitebox.useMapExtent")}
+          </Button>
+        </div>
       ) : isDataInputParameter(param) && availableLayers.length > 0 ? (
         <LayerOrPathInput
           id={`whitebox-${param.name}`}

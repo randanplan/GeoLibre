@@ -312,7 +312,7 @@ function paramKind(p: WhiteboxToolParameter): string {
       ? (schema.dataset as Record<string, unknown>)
       : {};
   const dataKind = String(
-    p.data_kind ?? dataset.kind ?? p.type ?? "",
+    p.data_kind ?? schema.data_kind ?? dataset.kind ?? p.type ?? "",
   ).toLowerCase();
   const role = String(p.io_role ?? schema.kind ?? "").toLowerCase();
   if (role === "input") return datasetParameterKind(dataKind, "in");
@@ -473,6 +473,18 @@ export function outputBaseName(toolId: string, paramName: string): string {
 }
 
 /**
+ * GeoLibre-authored subset extractors whose single result COG is written to a
+ * plain-string `output` path (no typed `raster_out` param). Their produced file
+ * is surfaced explicitly after the run; see the fallback in
+ * {@link runWhiteboxToolWasm}.
+ */
+const SUBSET_OUTPUT_TOOL_IDS = new Set([
+  "extract_cog_subset",
+  "extract_wms_subset",
+  "extract_xyz_tile_subset",
+]);
+
+/**
  * Run a Whitebox tool in the browser via WASM. Mirrors `runWhiteboxTool` but
  * executes locally and returns an already-completed {@link WhiteboxJob}. Output
  * values are inline: a `FeatureCollection` for `vector_out`, or a `Uint8Array`
@@ -520,10 +532,19 @@ export async function runWhiteboxToolWasm(
     ) {
       // Prefer bytes the caller resolved (the dialog fetches the layer's data);
       // otherwise try to fetch the parameter as a URL.
+      const provided = request.parameters[name];
+      const hasValue =
+        typeof provided === "string" ? provided.length > 0 : provided != null;
       const bytes =
         request.layer_inputs?.[name]?.bytes ??
-        (await fetchBytes(request.parameters[name]));
+        (hasValue ? await fetchBytes(provided) : null);
       if (!bytes) {
+        // An optional data input the user left blank is simply omitted rather
+        // than force-fetched: e.g. extract_cog_subset's `input` when a `url` is
+        // supplied instead (the tool reads the COG by byte-range from that url).
+        // Only a required input, or one with a value that could not be fetched,
+        // is a hard error.
+        if (!param.required && !hasValue) continue;
         throw new Error(
           `Could not read input "${name}" in the browser. Its data is not fetchable here (only available via the sidecar); turn off "Run locally (WASM)" to use the sidecar.`,
         );
@@ -625,6 +646,21 @@ export async function runWhiteboxToolWasm(
       if (isFeatureCollection(parsed)) out[entry.name] = parsed;
     } catch {
       // leave this output out
+    }
+  }
+  // The GeoLibre COG/WMS/XYZ subset extractors type their `output` as a plain
+  // string path (not a `raster_out`), so the loop above maps nothing. Surface
+  // their single produced result COG as raw bytes so it still reaches the map
+  // instead of being silently dropped. Scoped to those tool ids (not "any tool
+  // with no typed output") so an unrelated tool's scratch/sidecar/log file is
+  // never mistaken for a result and pushed through the raster loader.
+  if (outputs.length === 0 && SUBSET_OUTPUT_TOOL_IDS.has(request.tool_id)) {
+    for (const [file, bytes] of Object.entries(files)) {
+      // Skip files we supplied as inputs (e.g. a local `input` raster written to
+      // /work before the run) so an unchanged input isn't re-added as a spurious
+      // second layer alongside the real result.
+      if (file in input) continue;
+      out[file.replace(/\.[^.]+$/, "")] = bytes;
     }
   }
   return job(request.tool_id, "succeeded", stdout, out, null);
