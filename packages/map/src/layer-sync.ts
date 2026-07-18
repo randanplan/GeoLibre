@@ -1,9 +1,9 @@
 import {
-  circleRadiusValue,
   DEFAULT_LAYER_STYLE,
   type GeoLibreLayer,
   geojsonHasZCoordinates,
   type LayerStyle,
+  proportionalRadiusExpression,
   ruleBasedVisibilityFilter,
   shouldUseTiledRendering,
   styleValue,
@@ -1498,8 +1498,13 @@ function syncVectorControlPointSymbology(
   );
   if (!singleRenderer || !circleNativeId) {
     // Cluster/heatmap modes rebuild the control's native layers, so the old
-    // overlay (if any) just needs dropping.
+    // overlay (if any) just needs dropping. If the control ever reused a
+    // still-live circle id across the mode switch, also hand back its radius
+    // so a stale proportional interpolate cannot bleed into the new renderer.
     removeIfExists(map, syntheticMarkerId);
+    if (circleNativeId) {
+      restoreOverriddenCircleRadius(map, circleNativeId, layer);
+    }
     return;
   }
 
@@ -1566,15 +1571,51 @@ function syncVectorControlPointSymbology(
   }
 
   // Proportional size on the control's flat circle: hold the override while
-  // active; once off, restore the flat radius if (and only if) an expression
-  // from a previous override is still applied, then leave the paint to the
-  // control again.
-  const radius = circleRadiusValue(layer.style);
-  if (Array.isArray(radius)) {
+  // active; once off, restore the flat radius and leave the paint to the
+  // control again. Deliberately proportional-only (not circleRadiusValue):
+  // rule-based per-rule sizes stay a store-managed-layer feature, since none
+  // of the other rule-based paint overrides apply to control-owned layers.
+  const radius = proportionalRadiusExpression(layer.style);
+  if (radius) {
     map.setPaintProperty(circleNativeId, "circle-radius", radius);
-  } else if (Array.isArray(map.getPaintProperty(circleNativeId, "circle-radius"))) {
-    map.setPaintProperty(circleNativeId, "circle-radius", radius);
+    overriddenRadiusIdsFor(map).add(circleNativeId);
+  } else {
+    restoreOverriddenCircleRadius(map, circleNativeId, layer);
   }
+}
+
+// Control-owned circle layers whose circle-radius GeoLibre has overridden with
+// the proportional interpolate. Tracked (like externalNativeBaseFilters, keyed
+// per map so two maps sharing a native layer id never see each other's state)
+// so the restore only ever touches a layer this module actually overrode —
+// never a control-authored expression such as the cluster renderer's stepped
+// radius.
+const overriddenRadiusNativeLayerIds = new WeakMap<
+  maplibregl.Map,
+  Set<string>
+>();
+
+function overriddenRadiusIdsFor(map: maplibregl.Map): Set<string> {
+  let ids = overriddenRadiusNativeLayerIds.get(map);
+  if (!ids) {
+    ids = new Set();
+    overriddenRadiusNativeLayerIds.set(map, ids);
+  }
+  return ids;
+}
+
+/** Hand an overridden circle-radius back to the control's flat value. */
+function restoreOverriddenCircleRadius(
+  map: maplibregl.Map,
+  circleNativeId: string,
+  layer: GeoLibreLayer,
+): void {
+  if (!overriddenRadiusIdsFor(map).delete(circleNativeId)) return;
+  map.setPaintProperty(
+    circleNativeId,
+    "circle-radius",
+    styleValue(layer.style, "circleRadius"),
+  );
 }
 
 function setExternalNativeLayerPaint(
@@ -3481,6 +3522,14 @@ export function removeLayerFromMap(
     generatorSourceId(layerId),
   ]) {
     if (src && map.getSource(src)) map.removeSource(src);
+  }
+  // Drop radius-override tracking for the removed layer's native ids so a
+  // later layer reusing an id never inherits a stale restore.
+  const overriddenRadiusIds = overriddenRadiusNativeLayerIds.get(map);
+  if (overriddenRadiusIds) {
+    for (const id of getExternalNativeLayerIds(layer)) {
+      overriddenRadiusIds.delete(id);
+    }
   }
   // Free any client-side tile index built for this layer's tiled render path.
   unregisterGeoJsonVtSource(layerId);
