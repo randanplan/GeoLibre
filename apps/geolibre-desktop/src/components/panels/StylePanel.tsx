@@ -3,6 +3,7 @@ import {
   type DiagramField,
   type DiagramSizeMode,
   type DiagramType,
+  type ExpressionVariable,
   type FillPattern,
   type LabelStyle,
   type LayerType,
@@ -20,6 +21,7 @@ import {
   interpolateRampColors,
   isStyleLibraryTargetLayer,
   parseJsonExpression,
+  removeTrailingJsonCommas,
   styleValue,
   useAppStore,
 } from "@geolibre/core";
@@ -42,10 +44,11 @@ import {
   SKETCHES_SOURCE_KIND,
   countAtlasDroppedDiagrams,
 } from "@geolibre/plugins";
-import type { MapController } from "@geolibre/map";
+import { OGC_SCALE_DENOMINATOR_AT_ZOOM_0, type MapController } from "@geolibre/map";
 import type { ParseKeys, TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { RasterSymbologySection } from "./RasterSymbologySection";
+import { ExpressionBuilderDialog } from "../expressions/ExpressionBuilderDialog";
 import {
   ChevronDown,
   ChevronUp,
@@ -56,6 +59,7 @@ import {
   PanelRightOpen,
   Plus,
   SlidersHorizontal,
+  SquareFunction,
   Trash2,
 } from "lucide-react";
 import {
@@ -885,43 +889,6 @@ function validateExpressionJson(
   }
 }
 
-function removeTrailingJsonCommas(value: string): string {
-  let result = "";
-  let inString = false;
-  let escaped = false;
-
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-
-    if (inString) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      result += char;
-      continue;
-    }
-
-    if (char === ",") {
-      const nextSignificant = value.slice(index + 1).match(/\S/)?.[0];
-      if (nextSignificant === "]" || nextSignificant === "}") continue;
-    }
-
-    result += char;
-  }
-
-  return result;
-}
-
 // Shared shell classes for every expanded StylePanel return branch. On phones
 // (max-md) it overlays the map as a bottom sheet instead of squeezing it.
 const STYLE_PANEL_ASIDE_CLASS =
@@ -1209,6 +1176,7 @@ export function StylePanel({
   const setStyleManagerOpen = useAppStore((s) => s.setStyleManagerOpen);
   const updateLayer = useAppStore((s) => s.updateLayer);
   const moveLayer = useAppStore((s) => s.moveLayer);
+  const projectName = useAppStore((s) => s.projectName);
   const [internalCollapsed, setInternalCollapsed] = useState(getIsMobileViewport);
   // In the shared right-sidebar mode the parent owns collapse (controlled);
   // otherwise the panel manages it locally. `setIsCollapsed` routes to whichever
@@ -1288,6 +1256,21 @@ export function StylePanel({
     useState(DEFAULT_LAYER_STYLE.extrusionAdvancedStyleEnabled);
   const [vectorStyleError, setVectorStyleError] = useState<string | null>(null);
   const [extrusionError, setExtrusionError] = useState<string | null>(null);
+  // Which expression surface the shared Expression Builder is editing; null
+  // when the builder is closed. Targets carry the owning layer id so an edit
+  // can never be applied to a different layer than the one it was opened for
+  // (GH #1306).
+  const [expressionBuilderTarget, setExpressionBuilderTarget] = useState<
+    | { kind: "rule"; ruleId: string; index: number; layerId: string }
+    | { kind: "style"; layerId: string }
+    | { kind: "label"; layerId: string }
+    | null
+  >(null);
+  // Close the builder when the selected layer changes: its fields, sample
+  // features, and target expression all belong to the previous layer.
+  useEffect(() => {
+    setExpressionBuilderTarget(null);
+  }, [selectedLayerId]);
 
   const layer = layers.find((l) => l.id === selectedLayerId);
 
@@ -1412,6 +1395,48 @@ export function StylePanel({
         : { hasPoint: true, hasLine: true, hasPolygon: true },
     [layer],
   );
+  // Expression Builder inputs, memoized for stable identities: the dialog
+  // memoizes its validation/preview/field-type work off these props, so fresh
+  // arrays on every panel render would defeat that memoization while the
+  // dialog is open (and, combined with the diagnostics console interceptor,
+  // could re-render in a loop). Kept before the early returns below so the
+  // hook order stays stable.
+  const builderFeatures = useMemo(
+    () => layer?.geojson?.features ?? [],
+    [layer],
+  );
+  const builderFieldNames = useMemo(
+    () => (layer ? getAttributePropertyNames(layer) : []),
+    [layer],
+  );
+  // Zoom and variables snapshot the camera via getState() when the builder
+  // opens instead of subscribing: the dialog is modal (the map cannot move
+  // while it is open), and mapView subscriptions would re-render this whole
+  // panel on every map move even with the builder closed.
+  const { zoom: builderZoom, variables: builderVariables } = useMemo<{
+    zoom: number;
+    variables: ExpressionVariable[];
+  }>(() => {
+    const { zoom, center } = useAppStore.getState().mapView;
+    // Approximate scale denominator at the map center (96 dpi Web Mercator).
+    const mapScaleDenominator = Math.round(
+      (OGC_SCALE_DENOMINATOR_AT_ZOOM_0 / Math.pow(2, zoom)) *
+        Math.cos((center[1] * Math.PI) / 180),
+    );
+    return {
+      zoom,
+      variables: [
+        { token: "@project_name", value: projectName },
+        { token: "@layer_name", value: layer?.name ?? "" },
+        { token: "@feature_count", value: builderFeatures.length },
+        { token: "@map_zoom", value: Math.round(zoom * 100) / 100 },
+        { token: "@map_scale", value: mapScaleDenominator },
+      ],
+    };
+    // expressionBuilderTarget is an intentional dep: it re-snapshots the
+    // camera each time the builder opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectName, layer, builderFeatures, expressionBuilderTarget]);
   // Diagram-loss notices: whether the feature cap truncates the drawable
   // dataset (derived from the real scan — features without an anchor or a
   // positive value don't consume the cap, so the raw count alone would
@@ -2074,6 +2099,66 @@ export function StylePanel({
     setVectorRules([...currentRules, createVectorRule(true, color)]);
   };
 
+  // --- Shared Expression Builder (GH #1306) ---
+  // builderFeatures / builderFieldNames / builderVariables are memoized above
+  // the early returns so the dialog's props keep stable identities.
+  const builderRule =
+    expressionBuilderTarget?.kind === "rule"
+      ? currentRules.find((rule) => rule.id === expressionBuilderTarget.ruleId)
+      : undefined;
+  const builderInitialExpression =
+    expressionBuilderTarget?.kind === "rule"
+      ? (builderRule?.filter ?? "")
+      : expressionBuilderTarget?.kind === "style"
+        ? draftVectorStyleExpression
+        : labels.expression;
+  const builderTargetLabel =
+    expressionBuilderTarget?.kind === "rule"
+      ? t("style.symbology.ruleFilter", { index: expressionBuilderTarget.index })
+      : expressionBuilderTarget?.kind === "style"
+        ? t("style.symbology.colorExpression")
+        : t("style.labels.expression");
+  const applyBuilderExpression = (expression: string) => {
+    if (!expressionBuilderTarget) return;
+    // Never write through to a different layer than the builder was opened
+    // for (the selection-change effect closes the dialog, this is the guard
+    // against applying across a race).
+    if (expressionBuilderTarget.layerId !== layer.id) return;
+    if (expressionBuilderTarget.kind === "rule") {
+      updateVectorRule(expressionBuilderTarget.ruleId, { filter: expression });
+    } else if (expressionBuilderTarget.kind === "style") {
+      setDraftVectorStyleExpression(expression);
+      setVectorStyleError(null);
+    } else {
+      updateLabels({ expression });
+    }
+  };
+  // Only mounted while open: the dialog memoizes validation/preview work off
+  // props that this panel recreates each render, so keeping it mounted would
+  // rescan the layer's features on every unrelated panel re-render.
+  const expressionBuilderDialog = expressionBuilderTarget ? (
+    <ExpressionBuilderDialog
+      open
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setExpressionBuilderTarget(null);
+      }}
+      targetLabel={builderTargetLabel}
+      context={
+        expressionBuilderTarget.kind === "rule"
+          ? "filter"
+          : expressionBuilderTarget.kind === "style"
+            ? "color"
+            : "value"
+      }
+      initialExpression={builderInitialExpression}
+      features={builderFeatures}
+      fieldNames={builderFieldNames}
+      zoom={builderZoom}
+      variables={builderVariables}
+      onApply={applyBuilderExpression}
+    />
+  ) : null;
+
   // --- Geometry-gated sections (proportional size, fill pattern, markers) ---
   // geometryFlags is memoized above the early returns.
   const showProportionalControls =
@@ -2299,9 +2384,24 @@ export function StylePanel({
       )}
       {draftVectorStyleMode === "expression" && (
         <div className="space-y-2">
-          <Label htmlFor="vectorStyleExpression">
-            {t("style.symbology.colorExpression")}
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="vectorStyleExpression">
+              {t("style.symbology.colorExpression")}
+            </Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-7 w-7"
+              title={t("style.expressionBuilder.openBuilder")}
+              aria-label={t("style.expressionBuilder.openBuilder")}
+              onClick={() =>
+                setExpressionBuilderTarget({ kind: "style", layerId: layer.id })
+              }
+            >
+              <SquareFunction className="h-3.5 w-3.5" />
+            </Button>
+          </div>
           <textarea
             id="vectorStyleExpression"
             className="min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs placeholder:text-muted-foreground focus-visible:border-2 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-0"
@@ -2409,17 +2509,41 @@ export function StylePanel({
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </div>
-              <textarea
-                aria-label={t("style.symbology.ruleFilter", {
-                  index: index + 1,
-                })}
-                className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1.5 font-mono text-xs placeholder:text-muted-foreground focus-visible:border-2 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-0"
-                placeholder='["==", ["get", "TYPE"], "park"]'
-                value={rule.filter}
-                onChange={(event) =>
-                  updateVectorRule(rule.id, { filter: event.target.value })
-                }
-              />
+              <div className="flex items-start gap-1">
+                <textarea
+                  aria-label={t("style.symbology.ruleFilter", {
+                    index: index + 1,
+                  })}
+                  className="min-h-16 w-full flex-1 rounded-md border border-input bg-background px-2 py-1.5 font-mono text-xs placeholder:text-muted-foreground focus-visible:border-2 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-0"
+                  placeholder='["==", ["get", "TYPE"], "park"]'
+                  value={rule.filter}
+                  onChange={(event) =>
+                    updateVectorRule(rule.id, { filter: event.target.value })
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title={t("style.expressionBuilder.openBuilderForRule", {
+                    index: index + 1,
+                  })}
+                  aria-label={t("style.expressionBuilder.openBuilderForRule", {
+                    index: index + 1,
+                  })}
+                  onClick={() =>
+                    setExpressionBuilderTarget({
+                      kind: "rule",
+                      ruleId: rule.id,
+                      index: index + 1,
+                      layerId: layer.id,
+                    })
+                  }
+                >
+                  <SquareFunction className="h-3.5 w-3.5" />
+                </Button>
+              </div>
               {rule.filter.trim() && !parseJsonExpression(rule.filter) ? (
                 <p className="text-xs text-destructive">
                   {t("style.symbology.filterInvalid")}
@@ -3387,9 +3511,24 @@ export function StylePanel({
             ) : null}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="labelExpression">
-              {t("style.labels.expression")}
-            </Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="labelExpression">
+                {t("style.labels.expression")}
+              </Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                title={t("style.expressionBuilder.openBuilder")}
+                aria-label={t("style.expressionBuilder.openBuilder")}
+                onClick={() =>
+                  setExpressionBuilderTarget({ kind: "label", layerId: layer.id })
+                }
+              >
+                <SquareFunction className="h-3.5 w-3.5" />
+              </Button>
+            </div>
             <textarea
               id="labelExpression"
               aria-invalid={labelExpressionInvalid}
@@ -4207,6 +4346,7 @@ export function StylePanel({
               ? t("style.footerDeck")
               : t("style.footerMaplibre")}
       </p>
+      {expressionBuilderDialog}
     </aside>
   );
 }
