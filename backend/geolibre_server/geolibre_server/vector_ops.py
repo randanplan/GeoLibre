@@ -226,9 +226,7 @@ def _clip(
     left = _load_gdf(geojson, "Input layer")
     right = _load_gdf(overlay, "Overlay layer")
     clipped = gpd.clip(left, right)
-    return _to_feature_collection(clipped), [
-        f"Clip: produced {len(clipped)} feature(s)"
-    ]
+    return _to_feature_collection(clipped), [f"Clip: produced {len(clipped)} feature(s)"]
 
 
 # Spatial-join predicates exposed by the UI (a safe subset of the predicates
@@ -251,9 +249,7 @@ def _spatial_join(
     # surfaces its actionable message instead of a generic load error.
     predicate = str(parameters.get("predicate", "intersects") or "intersects")
     if predicate not in _SJOIN_PREDICATES:
-        raise ValueError(
-            f"Unknown predicate '{predicate}'. Accepted: {sorted(_SJOIN_PREDICATES)}"
-        )
+        raise ValueError(f"Unknown predicate '{predicate}'. Accepted: {sorted(_SJOIN_PREDICATES)}")
     how = str(parameters.get("how", "inner") or "inner")
     if how not in _SJOIN_HOW:
         raise ValueError(f"Unknown join type '{how}'. Accepted: {sorted(_SJOIN_HOW)}")
@@ -381,9 +377,7 @@ def _select_by_value(
         raise ValueError("A field is required")
     operator = str(parameters.get("operator", "eq") or "eq")
     if operator not in _VALUE_OPERATORS:
-        raise ValueError(
-            f"Unknown operator '{operator}'. Accepted: {sorted(_VALUE_OPERATORS)}"
-        )
+        raise ValueError(f"Unknown operator '{operator}'. Accepted: {sorted(_VALUE_OPERATORS)}")
     raw_param = parameters.get("value", "")
     raw = "" if raw_param is None else str(raw_param)
     if operator not in ("is-null", "is-not-null") and raw == "":
@@ -393,9 +387,7 @@ def _select_by_value(
     # GeoJSON): is-empty matches everything, the rest match nothing. _match_value
     # handles the missing value per feature; mirrors the client engine.
     selected = [
-        f
-        for f in features
-        if _match_value((f.get("properties") or {}).get(field), operator, raw)
+        f for f in features if _match_value((f.get("properties") or {}).get(field), operator, raw)
     ]
     fc = {"type": "FeatureCollection", "features": selected}
     return (
@@ -416,8 +408,7 @@ def _select_by_location(
     predicate = str(parameters.get("predicate", "intersects") or "intersects")
     if predicate not in _SELECT_LOCATION_PREDICATES:
         raise ValueError(
-            f"Unknown predicate '{predicate}'. "
-            f"Accepted: {sorted(_SELECT_LOCATION_PREDICATES)}"
+            f"Unknown predicate '{predicate}'. Accepted: {sorted(_SELECT_LOCATION_PREDICATES)}"
         )
     left = _load_gdf(geojson, "Input layer")
     # `total` is every input feature (matching the client's input.features.length
@@ -490,9 +481,7 @@ def _attribute_join(
         raise ValueError("A join key field is required")
     how = str(parameters.get("how", "left") or "left")
     if how not in _ATTRIBUTE_JOIN_HOW:
-        raise ValueError(
-            f"Unknown join type '{how}'. Accepted: {sorted(_ATTRIBUTE_JOIN_HOW)}"
-        )
+        raise ValueError(f"Unknown join type '{how}'. Accepted: {sorted(_ATTRIBUTE_JOIN_HOW)}")
     fields_raw = parameters.get("fields")
     requested_fields = None
     if isinstance(fields_raw, str) and fields_raw.strip():
@@ -521,13 +510,9 @@ def _attribute_join(
         selected_fields = [f for f in requested_fields if f in join_key_set]
         missing = [f for f in requested_fields if f not in join_key_set]
         if missing:
-            messages.append(
-                "Note: join field(s) not found and skipped: " + ", ".join(missing)
-            )
+            messages.append("Note: join field(s) not found and skipped: " + ", ".join(missing))
         if not selected_fields:
-            raise ValueError(
-                "None of the requested join fields exist in the join layer"
-            )
+            raise ValueError("None of the requested join fields exist in the join layer")
     else:
         # Default: every join field except the key (which would just duplicate
         # the target key column).
@@ -536,8 +521,7 @@ def _attribute_join(
         # warn so the user isn't left thinking a silent no-op succeeded.
         if join_features and not selected_fields:
             messages.append(
-                "Note: no fields to bring over "
-                "(join layer only contains the key column)"
+                "Note: no fields to bring over (join layer only contains the key column)"
             )
 
     # First-match lookup: when several join rows share a key, the first wins.
@@ -694,17 +678,13 @@ def _aggregate(
         raise ValueError(f"Group field '{group_field}' not found in layer attributes.")
     statistic = str(parameters.get("statistic", "count") or "count")
     if statistic not in _AGGREGATE_STATS:
-        raise ValueError(
-            f"Unknown statistic '{statistic}'. Accepted: {sorted(_AGGREGATE_STATS)}"
-        )
+        raise ValueError(f"Unknown statistic '{statistic}'. Accepted: {sorted(_AGGREGATE_STATS)}")
     stat_field = str(parameters.get("stat_field", "") or "").strip()
     if statistic != "count":
         if not stat_field:
             raise ValueError(f"A statistic field is required for '{statistic}'")
         if stat_field not in gdf.columns or stat_field == geom_col:
-            raise ValueError(
-                f"Statistic field '{stat_field}' not found in layer attributes."
-            )
+            raise ValueError(f"Statistic field '{stat_field}' not found in layer attributes.")
     # Restrict to polygons to match the client engine (and the tool's polygon-only
     # layer picker), so a mixed-geometry layer can't make the two engines count
     # different features per group.
@@ -730,10 +710,7 @@ def _aggregate(
     # assignment stays correct even if either call's group ordering changes.
     result[out_col] = values.reindex(result.index)
     result = result.reset_index()
-    message = (
-        f"Aggregated {len(gdf)} feature(s) into {len(result)} group(s) "
-        f"by '{group_field}'"
-    )
+    message = f"Aggregated {len(gdf)} feature(s) into {len(result)} group(s) by '{group_field}'"
     # Mirror the client's "(N skipped, not polygons)" note for mixed-geometry input.
     if skipped:
         message += f" ({skipped} skipped, not polygons)"
@@ -744,9 +721,7 @@ def _aggregate(
 _SMOOTH_MAX_ITERATIONS = 10
 
 
-def _chaikin_point(
-    a: list[float], b: list[float], wa: float
-) -> list[float]:
+def _chaikin_point(a: list[float], b: list[float], wa: float) -> list[float]:
     """Interpolate the point a fraction ``wa`` from ``a`` toward ``b``.
 
     ``wa = 0.75`` lands closer to ``a``. Z/elevation is carried through and
@@ -801,11 +776,7 @@ def _smooth_line(coords: list[list[float]], iterations: int) -> list[list[float]
 
 def _smooth_ring(ring: list[list[float]], iterations: int) -> list[list[float]]:
     """Apply ``iterations`` Chaikin passes to a polygon ring (re-closed)."""
-    closed = (
-        len(ring) > 1
-        and ring[0][0] == ring[-1][0]
-        and ring[0][1] == ring[-1][1]
-    )
+    closed = len(ring) > 1 and ring[0][0] == ring[-1][0] and ring[0][1] == ring[-1][1]
     pts = [list(p[:3]) for p in (ring[:-1] if closed else ring)]
     for _ in range(iterations):
         pts = _chaikin(pts, True)
@@ -841,8 +812,7 @@ def _smooth_geometry(geometry: dict, iterations: int) -> dict:
         return {
             "type": gtype,
             "coordinates": [
-                [_smooth_ring(ring, iterations) for ring in poly]
-                for poly in coords or []
+                [_smooth_ring(ring, iterations) for ring in poly] for poly in coords or []
             ],
         }
     if gtype == "GeometryCollection":
@@ -850,10 +820,7 @@ def _smooth_geometry(geometry: dict, iterations: int) -> dict:
         # passing through; point members fall to the pass-through below.
         return {
             "type": gtype,
-            "geometries": [
-                _smooth_geometry(g, iterations)
-                for g in geometry.get("geometries", [])
-            ],
+            "geometries": [_smooth_geometry(g, iterations) for g in geometry.get("geometries", [])],
         }
     return geometry
 
@@ -905,8 +872,7 @@ def _smooth(
         if gtype in _smoothable:
             smoothed += 1
         elif gtype == "GeometryCollection" and any(
-            g.get("type") in _smoothable
-            for g in geometry.get("geometries", [])
+            g.get("type") in _smoothable for g in geometry.get("geometries", [])
         ):
             # Only count a collection that actually has a line/polygon member;
             # a points-only collection passes through unchanged.
@@ -965,14 +931,10 @@ def _voronoi(
         # collinear points still yield no triangle with area, so report that.
         if not triangles:
             raise ValueError(
-                "Could not triangulate — the points are collinear "
-                "(no triangle has area)"
+                "Could not triangulate — the points are collinear (no triangle has area)"
             )
         result = gpd.GeoDataFrame(geometry=triangles, crs=WGS84)
-        message = (
-            f"Delaunay: produced {len(triangles)} triangle(s) "
-            f"from {len(points)} point(s)"
-        )
+        message = f"Delaunay: produced {len(triangles)} triangle(s) from {len(points)} point(s)"
         return _to_feature_collection(result), [message]
     # Clip the (otherwise unbounded outer) cells to the points' bbox expanded by a
     # 10% margin, matching the client, so they get a finite extent.
@@ -990,12 +952,151 @@ def _voronoi(
         if not cell.is_empty and cell.geom_type in ("Polygon", "MultiPolygon")
     ]
     if not cells:
-        raise ValueError(
-            "Could not build a Voronoi diagram — the points are collinear"
-        )
+        raise ValueError("Could not build a Voronoi diagram — the points are collinear")
     result = gpd.GeoDataFrame(geometry=cells, crs=WGS84)
     message = f"Voronoi: produced {len(cells)} cell(s) from {len(points)} point(s)"
     return _to_feature_collection(result), [message]
+
+
+def _first_coordinate(geom: Any) -> Optional[tuple[float, float]]:
+    """Return the first (x, y) coordinate of a geometry, or None if empty.
+
+    Used to anchor a validity-error marker when :func:`explain_validity` does
+    not include a problem location. Works on invalid geometry (no GEOS
+    operations that require validity).
+
+    Args:
+        geom: Any Shapely geometry.
+
+    Returns:
+        The first coordinate as ``(x, y)``, or ``None`` for empty geometry.
+    """
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "Point":
+        return (geom.x, geom.y)
+    if geom.geom_type in ("LineString", "LinearRing"):
+        x, y = geom.coords[0][:2]
+        return (x, y)
+    if geom.geom_type == "Polygon":
+        x, y = geom.exterior.coords[0][:2]
+        return (x, y)
+    for part in getattr(geom, "geoms", []):
+        found = _first_coordinate(part)
+        if found is not None:
+            return found
+    return None
+
+
+def _validity_anchor(reason: str, geom: Any) -> Optional[tuple[float, float]]:
+    """Choose a marker location for an invalid geometry.
+
+    Prefers the ``[x y]`` location embedded in a GEOS
+    :func:`~shapely.validation.explain_validity` message (e.g.
+    ``"Self-intersection[2 2]"``); falls back to the geometry's first
+    coordinate.
+
+    Args:
+        reason: The ``explain_validity`` message.
+        geom: The invalid Shapely geometry.
+
+    Returns:
+        The marker ``(x, y)``, or ``None`` when no coordinate exists at all.
+    """
+    import re  # noqa: PLC0415 - tiny stdlib import, keep local like the engines
+
+    match = re.search(r"\[([-+0-9.eE]+)\s+([-+0-9.eE]+)\]", reason)
+    if match:
+        try:
+            return (float(match.group(1)), float(match.group(2)))
+        except ValueError:
+            pass
+    return _first_coordinate(geom)
+
+
+def _check_validity(
+    geojson: Optional[dict], overlay: Optional[dict], parameters: dict[str, Any]
+) -> tuple[dict, list[str]]:
+    """Report features with invalid geometry as a marker point layer.
+
+    Mirrors the client tool: each invalid feature produces one point feature
+    with ``feature_index`` and a ``detail`` message. Unlike the DuckDB client
+    engine (a bare valid/invalid verdict), Shapely's ``explain_validity``
+    supplies the reason and, when GEOS embeds one, the problem location.
+    """
+    from shapely.validation import explain_validity  # noqa: PLC0415
+
+    gdf = _load_gdf(geojson, "Input layer")
+    markers: list[dict] = []
+    missing = 0
+    invalid = 0
+    for index, geom in enumerate(gdf.geometry):
+        if geom is None or geom.is_empty:
+            missing += 1
+            continue
+        if geom.is_valid:
+            continue
+        # Count the feature as invalid even when no marker location can be
+        # resolved, so the summary never understates the problem.
+        invalid += 1
+        reason = explain_validity(geom)
+        anchor = _validity_anchor(reason, geom)
+        if anchor is None:
+            continue
+        markers.append(
+            {
+                "type": "Feature",
+                "properties": {"feature_index": index, "detail": reason},
+                "geometry": {"type": "Point", "coordinates": list(anchor)},
+            }
+        )
+    checked = len(gdf) - missing
+    message = f"Checked {checked} feature(s): {invalid} invalid"
+    if missing:
+        message += f", {missing} without geometry"
+    messages = [message]
+    if invalid == 0:
+        messages.append("No invalid geometries found")
+    return {"type": "FeatureCollection", "features": markers}, messages
+
+
+def _fix_geometries(
+    geojson: Optional[dict], overlay: Optional[dict], parameters: dict[str, Any]
+) -> tuple[dict, list[str]]:
+    """Repair invalid geometries with ``make_valid``; valid features pass through.
+
+    A repair that raises or produces empty geometry leaves the original
+    geometry unchanged (and is counted), matching the client tool's behavior.
+    """
+    from shapely.validation import make_valid  # noqa: PLC0415
+
+    gdf = _load_gdf(geojson, "Input layer")
+    fixed = 0
+    unfixable = 0
+
+    def _repair(geom: Any) -> Any:
+        nonlocal fixed, unfixable
+        if geom is None or geom.is_empty or geom.is_valid:
+            return geom
+        try:
+            repaired = make_valid(geom)
+        except Exception:  # noqa: BLE001 - keep the original geometry
+            unfixable += 1
+            return geom
+        if repaired is None or repaired.is_empty:
+            unfixable += 1
+            return geom
+        fixed += 1
+        return repaired
+
+    gdf["geometry"] = gdf.geometry.apply(_repair)
+    if fixed == 0 and unfixable == 0:
+        message = "All geometries are already valid — nothing to fix"
+    else:
+        message = f"Fixed {fixed} invalid geometr{'y' if fixed == 1 else 'ies'}"
+        if unfixable:
+            message += f"; {unfixable} could not be repaired and were left unchanged"
+    return _to_feature_collection(gdf), [message]
 
 
 # tool_id -> handler(geojson, overlay, parameters) -> (feature_collection, messages)
@@ -1019,6 +1120,8 @@ _DISPATCH: dict[str, Callable[..., tuple[dict, list[str]]]] = {
     "aggregate": _aggregate,
     "smooth": _smooth,
     "voronoi": _voronoi,
+    "check-validity": _check_validity,
+    "fix-geometries": _fix_geometries,
 }
 
 

@@ -31,10 +31,7 @@ describe("parseDelimitedTextRows", () => {
   });
 
   it("honours quoted fields and a tab delimiter", () => {
-    const { fields, rows } = parseDelimitedTextRows(
-      'name\tlng\n"Smith, John"\t-1.5\n',
-      "\t",
-    );
+    const { fields, rows } = parseDelimitedTextRows('name\tlng\n"Smith, John"\t-1.5\n', "\t");
     assert.deepEqual(fields, ["name", "lng"]);
     assert.equal(rows[0].name, "Smith, John");
   });
@@ -66,9 +63,7 @@ describe("detectAndParseDeckVizInput", () => {
   });
 
   it("detects a JSON array of objects with key columns", () => {
-    const parsed = detectAndParseDeckVizInput(
-      '[{"path":[[0,0]],"timestamps":[1,2]}]',
-    );
+    const parsed = detectAndParseDeckVizInput('[{"path":[[0,0]],"timestamps":[1,2]}]');
     assert.equal(parsed.format, "json-objects");
     assert.deepEqual(
       parsed.columns.map((column) => column.value),
@@ -91,10 +86,7 @@ describe("detectAndParseDeckVizInput", () => {
     );
     assert.equal(parsed.format, "geojson");
     assert.ok(parsed.geojson);
-    assert.deepEqual(
-      parsed.columns.map((column) => column.value).sort(),
-      ["growth", "height"],
-    );
+    assert.deepEqual(parsed.columns.map((column) => column.value).sort(), ["growth", "height"]);
   });
 
   it("throws on empty or unsupported input", () => {
@@ -108,9 +100,7 @@ describe("autoDetectFieldMapping", () => {
   const odRoles = getDeckVizLayerDef("arc")!.roles;
 
   it("maps named columns by detection hints", () => {
-    const parsed = detectAndParseDeckVizInput(
-      "Longitude,Latitude,Magnitude\n-1,2,3\n",
-    );
+    const parsed = detectAndParseDeckVizInput("Longitude,Latitude,Magnitude\n-1,2,3\n");
     const mapping = autoDetectFieldMapping(pointRoles, parsed.columns);
     assert.equal(mapping.lng, "Longitude");
     assert.equal(mapping.lat, "Latitude");
@@ -133,9 +123,7 @@ describe("autoDetectFieldMapping", () => {
   });
 
   it("maps origin-destination columns without reusing a column", () => {
-    const parsed = detectAndParseDeckVizInput(
-      "lon1,lat1,lon2,lat2\n-1,2,-3,4\n",
-    );
+    const parsed = detectAndParseDeckVizInput("lon1,lat1,lon2,lat2\n-1,2,-3,4\n");
     const mapping = autoDetectFieldMapping(odRoles, parsed.columns);
     assert.deepEqual(mapping, {
       sourceLng: "lon1",
@@ -170,17 +158,27 @@ describe("computeDeckVizBounds", () => {
 
   it("walks Trips path arrays", () => {
     const bounds = computeDeckVizBounds(
-      [{ path: [[-2, 1], [4, 9]] }],
+      [
+        {
+          path: [
+            [-2, 1],
+            [4, 9],
+          ],
+        },
+      ],
       { path: "path" },
     );
     assert.deepEqual(bounds, [-2, 1, 4, 9]);
   });
 
   it("returns null when no finite coordinates are present", () => {
-    assert.equal(computeDeckVizBounds([{ lng: "x", lat: "y" }], {
-      lng: "lng",
-      lat: "lat",
-    }), null);
+    assert.equal(
+      computeDeckVizBounds([{ lng: "x", lat: "y" }], {
+        lng: "lng",
+        lat: "lat",
+      }),
+      null,
+    );
   });
 });
 
@@ -305,7 +303,10 @@ describe("scenegraph (glTF 3D model) layer", () => {
     assert.ok(config?.scenegraph);
     assert.equal(config.scenegraph.modelUrl, "https://example.com/model.glb");
     assert.equal(config.scenegraph.sizeScale, 250);
+    assert.equal(config.scenegraph.sizeMinPixels, 1);
     assert.equal(config.scenegraph.bearing, 45);
+    assert.equal(config.scenegraph.orientationRoll, 90);
+    assert.deepEqual(config.scenegraph.translation, [0, 0, 0]);
     assert.equal(config.scenegraph.altitude, 100);
   });
 
@@ -322,11 +323,11 @@ describe("scenegraph (glTF 3D model) layer", () => {
       rows: [],
     });
     const config = readDeckVizConfig(layer);
-    assert.equal(
-      config?.scenegraph?.sizeScale,
-      DEFAULT_DECK_VIZ_SCENEGRAPH.sizeScale,
-    );
+    assert.equal(config?.scenegraph?.sizeScale, DEFAULT_DECK_VIZ_SCENEGRAPH.sizeScale);
+    assert.equal(config?.scenegraph?.sizeMinPixels, 1);
     assert.equal(config?.scenegraph?.bearing, 0);
+    assert.equal(config?.scenegraph?.orientationRoll, 90);
+    assert.deepEqual(config?.scenegraph?.translation, [0, 0, 0]);
   });
 
   it("builds a ScenegraphLayer whose accessors fold in transform + columns", () => {
@@ -354,7 +355,10 @@ describe("scenegraph (glTF 3D model) layer", () => {
       scenegraph: {
         modelUrl: "https://example.com/model.glb",
         sizeScale: 300,
+        sizeMinPixels: 0,
         bearing: 10,
+        orientationRoll: 0,
+        translation: [0, 0, -500],
         altitude: 25,
       },
     });
@@ -362,16 +366,16 @@ describe("scenegraph (glTF 3D model) layer", () => {
     const props = captured.props!;
     assert.equal(props.scenegraph, "https://example.com/model.glb");
     assert.equal(props.sizeScale, 300);
+    assert.equal(props.sizeMinPixels, 0);
     assert.equal(props.opacity, 0.5);
     const record = { lng: -122.4, lat: 37.8, alt: 50, heading: 90 };
     const position = (props.getPosition as (r: unknown) => number[])(record);
     // altitude column (50) + base altitude (25)
     assert.deepEqual(position, [-122.4, 37.8, 75]);
-    const orientation = (
-      props.getOrientation as (r: unknown) => number[]
-    )(record);
-    // bearing column (90) drives yaw; trailing 90° roll stands the model up
-    assert.deepEqual(orientation, [0, 90, 90]);
+    const orientation = (props.getOrientation as (r: unknown) => number[])(record);
+    // bearing column (90) drives yaw; configured roll lets KML models opt out
+    assert.deepEqual(orientation, [0, 90, 0]);
+    assert.deepEqual(props.getTranslation, [0, 0, -500]);
   });
 
   it("uses the constant bearing/altitude when no columns are mapped", () => {
@@ -400,14 +404,8 @@ describe("scenegraph (glTF 3D model) layer", () => {
     });
     const props = captured.props!;
     const record = { lng: 1, lat: 2 };
-    assert.deepEqual(
-      (props.getPosition as (r: unknown) => number[])(record),
-      [1, 2, 12],
-    );
-    assert.deepEqual(
-      (props.getOrientation as (r: unknown) => number[])(record),
-      [0, 30, 90],
-    );
+    assert.deepEqual((props.getPosition as (r: unknown) => number[])(record), [1, 2, 12]);
+    assert.deepEqual((props.getOrientation as (r: unknown) => number[])(record), [0, 30, 90]);
   });
 });
 

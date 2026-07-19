@@ -292,12 +292,67 @@
 - [x] Legend populates automatically from a paletted raster's embedded color table, matching the map colors without manual entry
 - [x] Website and GitHub links added to the Help menu for quick access to the project home and source
 
-## v1.10: I3S scene layers, OGC API vector tiles, and local NetCDF/HDF loading (current)
+## v1.10: I3S scene layers, OGC API vector tiles, and local NetCDF/HDF loading
 
 - [x] Add ArcGIS I3S scene layers (Integrated Mesh and 3D Object layers) as a data source, streamed and rendered in 3D on the shared deck.gl instance through a Tile3DLayer with the I3SLoader
 - [x] Add Data now supports OGC API - Tiles vector tile services as a remote source, so standards-based vector tile endpoints can be added alongside XYZ and ArcGIS vector tiles
 - [x] Load local HDF5 and NetCDF-4 files directly from disk, extending the NetCDF/HDF workflow beyond Cloud-Optimized references to files already on your machine
 - [x] GeoEditor plugin can pull the vector features currently visible in the map view into the editor, so you can start editing what you are looking at without re-importing the source data
+
+## v2.0: A 3D globe, planetary mapping, symbology interchange, and editable source layers
+
+- [x] Switch any map pane to a **CesiumJS 3D globe** view that stays camera-synced with the 2D maps and mirrors the layer stack, adding a true photorealistic globe alongside the flat workspace (requires a Cesium Ion token)
+- [x] Planetary mapping with the OpenPlanetaryMap basemap set (Mars and the Moon) plus USGS Astrogeology basemaps for Mercury, Venus, the Galilean moons, Titan, Pluto, and Charon reprojected to Web Mercator, a per-project ellipsoid whose radius drives distance/area/scale, and a planet switcher in the Layers panel, plus an expanded EOX Maps catalog and dark-mode-aware basemap theming
+- [x] Import and export vector layer symbology as OGC SLD, QGIS QML, and Mapbox GL style JSON, so styles round-trip between GeoLibre, QGIS, and the Mapbox/MapLibre ecosystem
+- [x] Edit vector layers and write the changes back to their source, covering GeoPackage and GeoJSON files as well as PostGIS database tables
+- [x] New Weather menu with live cloud and precipitation radar overlays (RainViewer), a Clouds overlay in the Controls menu, and a Google Earth-style sun position simulation for realistic lighting
+- [x] Richer KML/KMZ support: render GroundOverlay images as map overlays (animated through the Time Slider when time-tagged) and display embedded Collada (.dae) 3D models
+- [x] Render vector layers that carry Z coordinates in true 3D rather than flattening them onto the ground plane
+- [x] Extract COG, WMS, and XYZ bounding-box subsets directly in the browser, and build a normalized-difference index from any HTTP COG
+- [x] New built-in plugins: a Mapillary coverage and street-level image viewer, a Historical Imagery panel, and an Elevation Profile tool, plus a UTM easting/northing grid mode for the Gridlines overlay
+- [x] Field Calculator can compute geometry length and area, and the attribute table supports Ctrl- and Shift-click multi-row selection
+- [x] Google Earth-style camera-reset keyboard shortcuts, View in Google Maps and View in Google Earth actions, and a double-click terrain control for setting vertical exaggeration
+- [x] Import delimited text (CSV) without coordinates as a standalone attribute table
+- [x] All 13 locale catalogs completed, with the remaining hardcoded panel and dialog strings migrated to the translation system
+- [x] The AI assistant can read provider API keys from OS environment variables, and the desktop diagnostics network log now captures native Tauri HTTP requests and classifies failed `fetch()` errors
+
+## v2.1: A data-source Browser panel, route animation, in-browser object detection, and map recording
+
+- [x] A QGIS-style **Browser panel** (Data Source Manager) for exploring and adding data from one place: browse map Services and Recent items, connect to PostGIS databases and browse their schemas and tables, drill into local files, save and reopen Favorites, add a New connection per service kind, and navigate the whole tree from the keyboard
+- [x] **Route animation**: animate a marker along any line layer, follow the track in 3D with camera controls, and export the whole animation as an MP4 video
+- [x] **In-browser object detection** that runs ONNX/YOLO models directly in the webview, no server or Python required
+- [x] Record the map canvas (or a drawn bounding box) to a video file straight from the browser
+- [x] A true native-resolution viewer for geotagged photos, so full-detail imagery stays crisp on the map
+- [x] Wikipedia knowledge cards: click a place on the map to pull up its Wikipedia summary and info card
+- [x] USGS planetary basemaps for nine more celestial bodies, extending the planetary mapping catalog
+- [x] New OpenAerialMap plugin for searching open aerial imagery, plus a GEBCO ocean-bathymetry WMS sample with proper attribution
+- [x] New Source Cooperative plugin for browsing [source.coop](https://source.coop) open data: search the catalog, walk a product's files, and add GeoParquet, PMTiles, COG, GeoJSON, and FlatGeobuf straight to the map (streamed from the source) or download them
+- [x] The Whitebox toolbox is now a floating panel, and Processing subset tools can populate their bounding box from the current map view
+- [x] Scale bar switches between metric, imperial, and nautical units
+- [x] Bundled plugin drop-ins can set `activeByDefault` in their manifest, deployments can opt out of the welcome dialog, and the app now defaults to the Advanced interface and skips the welcome dialog on first run
+- [x] Optional HTTP Basic Auth for the web (Docker) container
+
+## v2.2: A styling overhaul, expression-driven fields and labels, print atlas, and browser-native conversions (current)
+
+- [x] A **rule-based renderer** with per-rule symbol properties, scale-dependent visibility, nested rules, and per-rule toggles, so a single layer can carry a full hierarchy of styling rules and hide anything that matches no rule when the else rule is off
+- [x] A **Style Manager** that saves reusable symbol, color-ramp, and label presets to a personal library and applies them across projects
+- [x] A symbology pack covering inverted-polygon masks, arrow and marker lines, and geometry generators, plus data-driven proportional sizing for marker icons
+- [x] **Diagram symbology**: draw pie, donut, and bar charts on features straight from their attributes
+- [x] A **data-defined labeling engine** with expression-driven label properties, placement priority, and full control over how labels are drawn
+- [x] A shared **Expression Builder** — a function reference, searchable field list, live preview, and reusable variables — wired into filters, labels, styling, and selection
+- [x] **Virtual fields**: expression-backed computed columns that update as the underlying data changes, plus a Raster Attribute Table for single-band categorical rasters
+- [x] An **attribute form designer** with edit widgets, validation constraints, and conditional field visibility for structured data entry
+- [x] **Persistent attribute joins** configured in layer properties, so a table can enrich a layer's features and stick across sessions
+- [x] **Select by Expression** and **Select by Location**, plus live query layers backed by DuckDB SQL that re-run as the data updates
+- [x] **Atlas / map series** in the Print Layout — generate one page per feature, or a uniform series of pages along a line such as a river or trail — and drop attribute-table and chart blocks onto the page
+- [x] Browser-native format conversion for COG, FlatGeobuf, Shapefile, and GeoPackage, and Vector to PMTiles running on a background worker, no Python sidecar required
+- [x] **Live GPS tracking**: a moving position marker, a recorded track log, and digitizing new features straight from the GPS feed
+- [x] Data quality tools to check validity, fix geometries, and check topology rules, catching and repairing bad geometries before they cause trouble
+- [x] A **Processing History** panel that lists every tool run, re-runs it with one click, and copies the equivalent Python code
+- [x] Timelapse mode now animates EOX Sentinel-2 cloudless annual basemaps and NASA GIBS providers (Landsat/WELD and MODIS land cover) with a provider picker and legend
+- [x] Desktop gains OS trust store and mTLS client-certificate support for native HTTP, automatic reload when local files change on disk, and Esri File Geodatabase (`.gdb`) layer support
+- [x] New Natural Earth and Source Cooperative data browsers under Plugins > Web Services, including opening or streaming large GeoParquet from Source Cooperative
+- [x] Terrain-aware 3D measurements in the Measure tool, optional title/source captions and on-map panel capture (HTML, legend, colorbar) in video recordings, and a new Georgian locale alongside full Arabic right-to-left support
 
 ## Plugin marketplace and registry (design)
 

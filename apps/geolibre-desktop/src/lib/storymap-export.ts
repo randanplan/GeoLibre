@@ -224,9 +224,7 @@ export function buildStoryMapHtml(options: StoryMapExportOptions): string {
       // carry both fill and stroke opacity so a faded point hides fully (#934).
       for (const opacityProp of opacityProperties(entry.layerSpec.type as string)) {
         const styleOpacity =
-          typeof paint[opacityProp] === "number"
-            ? (paint[opacityProp] as number)
-            : 1;
+          typeof paint[opacityProp] === "number" ? (paint[opacityProp] as number) : 1;
         paint[opacityProp] =
           entry.chapterZeroOpacity !== undefined
             ? entry.chapterZeroOpacity
@@ -254,9 +252,7 @@ export function buildStoryMapHtml(options: StoryMapExportOptions): string {
  * would let crafted project content inject markup into the exported page.
  */
 function jsonForScript(value: unknown, space?: number): string {
-  return JSON.stringify(value, null, space)
-    .replace(/<\//g, "<\\/")
-    .replace(/<!--/g, "<\\!--");
+  return JSON.stringify(value, null, space).replace(/<\//g, "<\\/").replace(/<!--/g, "<\\!--");
 }
 
 function opacityProperties(type: string): string[] {
@@ -319,12 +315,16 @@ function buildInlineLayer(
 
 /**
  * Build a MapLibre raster tile source from a raster/XYZ/WMS/WMTS layer, or
- * `null` when the layer carries no tile URL template. Mirrors the live app's
- * external raster tile sync so basemaps and tile services render in the export.
+ * `null` when the layer carries no tile URL template or TileJSON URL. Mirrors
+ * the live app's external raster tile sync so basemaps and tile services
+ * render in the export. A TileJSON `url` covers service-backed rasters such as
+ * Planetary Computer scenes, whose tiler resolves and signs the actual tile
+ * URLs server-side at load time, so for such resolver-backed services the
+ * export embeds a stable endpoint instead of an expiring token (#1272). A
+ * provider whose url or tile template is itself pre-signed still expires with
+ * its credential — the export can only embed what the source exposes.
  */
-function buildRasterTileSource(
-  layer: GeoLibreLayer,
-): Record<string, unknown> | null {
+function buildRasterTileSource(layer: GeoLibreLayer): Record<string, unknown> | null {
   if (
     layer.type !== "raster" &&
     layer.type !== "xyz" &&
@@ -333,15 +333,22 @@ function buildRasterTileSource(
   ) {
     return null;
   }
-  const tiles = Array.isArray(layer.source.tiles)
-    ? layer.source.tiles.filter((tile): tile is string => typeof tile === "string")
-    : [];
-  if (tiles.length === 0) return null;
+  // Only http(s) tile templates and TileJSON URLs can load in a standalone
+  // page; app-internal protocols (blob:, pmtiles:, geolibre:, …) have no
+  // handler there.
+  const isHttpUrl = (value: unknown): value is string =>
+    typeof value === "string" && /^https?:\/\//i.test(value);
+  const tiles = Array.isArray(layer.source.tiles) ? layer.source.tiles.filter(isHttpUrl) : [];
+  // The TileJSON `url` fallback is scoped to plain raster layers: wms/wmts
+  // records keep the raw service endpoint (not a TileJSON) in `url` — their
+  // loadable template lives in `tiles` — so embedding it would produce a
+  // source MapLibre cannot parse instead of just omitting the layer.
+  const url = layer.type === "raster" && isHttpUrl(layer.source.url) ? layer.source.url : null;
+  if (tiles.length === 0 && !url) return null;
   const source: Record<string, unknown> = {
     type: "raster",
-    tiles,
-    tileSize:
-      typeof layer.source.tileSize === "number" ? layer.source.tileSize : 256,
+    ...(tiles.length > 0 ? { tiles } : { url }),
+    tileSize: typeof layer.source.tileSize === "number" ? layer.source.tileSize : 256,
   };
   if (typeof layer.source.minzoom === "number") {
     source.minzoom = layer.source.minzoom;
@@ -359,8 +366,7 @@ function buildRasterTileSource(
     Array.isArray(layer.source.bounds) &&
     layer.source.bounds.length === 4 &&
     layer.source.bounds.every(
-      (value): value is number =>
-        typeof value === "number" && Number.isFinite(value),
+      (value): value is number => typeof value === "number" && Number.isFinite(value),
     )
   ) {
     source.bounds = layer.source.bounds;
@@ -369,9 +375,7 @@ function buildRasterTileSource(
 }
 
 /** Pick the dominant (most common) geometry kind for the MapLibre layer type. */
-function geometryKind(
-  geojson: FeatureCollection,
-): "polygon" | "line" | "point" | null {
+function geometryKind(geojson: FeatureCollection): "polygon" | "line" | "point" | null {
   const counts = { polygon: 0, line: 0, point: 0 };
   for (const feature of geojson.features) {
     const kind = classifyGeometry(feature.geometry);
@@ -386,9 +390,7 @@ function geometryKind(
   return best;
 }
 
-function classifyGeometry(
-  geometry: Geometry | null,
-): "polygon" | "line" | "point" | null {
+function classifyGeometry(geometry: Geometry | null): "polygon" | "line" | "point" | null {
   if (!geometry) return null;
   switch (geometry.type) {
     case "Polygon":
@@ -412,9 +414,7 @@ function classifyGeometry(
 }
 
 /** Convert a GeoLibre GeoJSON layer to a minimal MapLibre layer spec. */
-function buildLayerSpec(
-  layer: GeoLibreLayer,
-): Record<string, unknown> | null {
+function buildLayerSpec(layer: GeoLibreLayer): Record<string, unknown> | null {
   if (!layer.geojson) return null;
   const kind = geometryKind(layer.geojson);
   if (!kind) return null;
@@ -469,10 +469,7 @@ function buildLayerSpec(
   };
 }
 
-function renderTemplate(
-  config: Record<string, unknown>,
-  inlineLayerScript: string,
-): string {
+function renderTemplate(config: Record<string, unknown>, inlineLayerScript: string): string {
   const configJson = jsonForScript(config, 4);
   return `<!DOCTYPE html>
 <html lang="en">
@@ -903,8 +900,5 @@ ${inlineLayerScript}
 }
 
 function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

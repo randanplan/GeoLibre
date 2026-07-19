@@ -9,18 +9,15 @@ import {
   readCadLayers,
 } from "../../../../lib/duckdb-vector-loader";
 import { openLocalDataFileWithFallback } from "../../../../lib/tauri-io";
-import { CAD_CRS_PRESETS, CAD_SAMPLES } from "../constants";
+import { COMMON_CRS_PRESETS, CAD_SAMPLES } from "../constants";
 import {
   createBaseLayer,
   errorMessage,
   fileNameFromPath,
   layerNameFromPath,
+  normalizeCrs,
 } from "../helpers";
-import {
-  AddDataSourceForm,
-  SampleDataSelect,
-  useAddDataSource,
-} from "../shared";
+import { AddDataSourceForm, SampleDataSelect, useAddDataSource } from "../shared";
 
 interface SelectedCadFile {
   path: string;
@@ -31,19 +28,6 @@ interface SelectedCadFile {
 function extensionFromPath(path: string): string {
   const match = /\.([^.\\/]+)$/.exec(fileNameFromPath(path));
   return match ? match[1].toLowerCase() : "";
-}
-
-/**
- * Normalize a user-entered CRS into the `AUTHORITY:CODE` form `ST_Transform`
- * expects: a bare number becomes `EPSG:<n>`, an `epsg:4326` is upper-cased, and
- * an already-qualified `ESRI:102100` passes through. A blank stays blank (load
- * the drawing as-is, i.e. assume it is already in lon/lat).
- */
-function normalizeCrs(raw: string): string {
-  const value = raw.trim();
-  if (!value) return "";
-  if (/^\d+$/.test(value)) return `EPSG:${value}`;
-  return value.toUpperCase();
 }
 
 /**
@@ -69,9 +53,7 @@ export function CadSource() {
   const { t } = useTranslation();
   const [defaultName] = useState(() => t("addData.cad.defaultName"));
   const source = useAddDataSource(defaultName);
-  const [selectedFile, setSelectedFile] = useState<SelectedCadFile | null>(
-    null,
-  );
+  const [selectedFile, setSelectedFile] = useState<SelectedCadFile | null>(null);
   const [layers, setLayers] = useState<CadLayerInfo[]>([]);
   // `null` = nothing chosen yet; "" is a real selection (an unnamed OGR layer,
   // which ST_Read reads as the first layer), so the two must stay distinct.
@@ -99,19 +81,13 @@ export function CadSource() {
   // user has since superseded bails out before touching state. The caller owns
   // the `isReadingLayers` flag (so the fetch in `handleSelectSample` is covered
   // too) — this helper never toggles it.
-  const applyCadBytes = async (
-    requestId: number,
-    path: string,
-    data: ArrayBuffer,
-  ) => {
+  const applyCadBytes = async (requestId: number, path: string, data: ArrayBuffer) => {
     const file: SelectedCadFile = { path, data };
     setSelectedFile(file);
     setLayers([]);
     setSelectedLayer(null);
     source.setLayerName((current) =>
-      current.trim() && current !== defaultName
-        ? current
-        : layerNameFromPath(path, defaultName),
+      current.trim() && current !== defaultName ? current : layerNameFromPath(path, defaultName),
     );
 
     const cadLayers = await readCadLayers(buildVectorFile(file));
@@ -126,9 +102,7 @@ export function CadSource() {
   const handleChooseFile = async () => {
     source.setError(null);
     const result = await openLocalDataFileWithFallback({
-      filters: [
-        { name: t("addData.cad.fileFilter"), extensions: ["dxf", "dwg"] },
-      ],
+      filters: [{ name: t("addData.cad.fileFilter"), extensions: ["dxf", "dwg"] }],
       accept: ".dxf,.dwg",
       readBinary: true,
     }).catch((err: unknown) => {
@@ -158,17 +132,14 @@ export function CadSource() {
     try {
       const response = await fetch(sample.url);
       if (!response.ok) {
-        throw new Error(
-          t("addData.common.requestFailed", { status: response.status }),
-        );
+        throw new Error(t("addData.common.requestFailed", { status: response.status }));
       }
       const data = await response.arrayBuffer();
       if (requestId !== loadSeq.current) return; // a newer load started
       setCrs(sample.crs);
       // Parse the path off the URL so a query string/fragment can't leak into
       // the filename (and thus the extension detection).
-      const filename =
-        new URL(sample.url).pathname.split("/").pop() || "sample.dxf";
+      const filename = new URL(sample.url).pathname.split("/").pop() || "sample.dxf";
       await applyCadBytes(requestId, filename, data);
     } catch (err) {
       if (requestId === loadSeq.current) {
@@ -190,10 +161,10 @@ export function CadSource() {
 
     let featureCollection;
     try {
-      featureCollection = await loadDuckDbVectorFile(
-        buildVectorFile(selectedFile),
-        { layer: selectedLayer, overrideSourceCrs },
-      );
+      featureCollection = await loadDuckDbVectorFile(buildVectorFile(selectedFile), {
+        layer: selectedLayer,
+        overrideSourceCrs,
+      });
     } catch (err) {
       if (isUnsupportedGeometryError(err)) {
         // Keep the raw cause in DevTools while showing the friendly message.
@@ -232,10 +203,7 @@ export function CadSource() {
       onSubmit={handleSubmit}
       error={source.error}
       submitDisabled={
-        source.isSubmitting ||
-        isReadingLayers ||
-        !selectedFile ||
-        selectedLayer === null
+        source.isSubmitting || isReadingLayers || !selectedFile || selectedLayer === null
       }
     >
       <div className="space-y-3">
@@ -246,7 +214,7 @@ export function CadSource() {
             onClick={handleChooseFile}
             disabled={isReadingLayers || source.isSubmitting}
           >
-            <FileUp className="mr-2 h-3.5 w-3.5" />
+            <FileUp className="me-2 h-3.5 w-3.5" />
             {t("addData.common.chooseFile")}
           </Button>
           <span className="min-w-0 truncate text-xs text-muted-foreground">
@@ -258,7 +226,7 @@ export function CadSource() {
 
         <div className="space-y-1.5">
           <Label htmlFor="cad-layer">
-            <Layers className="mr-1 inline h-3.5 w-3.5 align-text-bottom" />
+            <Layers className="me-1 inline h-3.5 w-3.5 align-text-bottom" />
             {t("addData.cad.layer")}
           </Label>
           <Select
@@ -305,15 +273,13 @@ export function CadSource() {
             <option value="" disabled>
               {t("addData.cad.crsPresetLabel")}
             </option>
-            {CAD_CRS_PRESETS.map((preset) => (
+            {COMMON_CRS_PRESETS.map((preset) => (
               <option key={preset.value} value={preset.value}>
                 {preset.label}
               </option>
             ))}
           </Select>
-          <p className="text-xs text-muted-foreground">
-            {t("addData.cad.crsHelp")}
-          </p>
+          <p className="text-xs text-muted-foreground">{t("addData.cad.crsHelp")}</p>
         </div>
 
         <SampleDataSelect

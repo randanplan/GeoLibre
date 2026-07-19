@@ -46,15 +46,11 @@ export function ReleaseNotes({ notes }: ReleaseNotesProps) {
     .filter((line) => line.length > 0);
 
   if (lines.length === 0) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        {t("updates.noChangelog")}
-      </p>
-    );
+    return <p className="text-xs text-muted-foreground">{t("updates.noChangelog")}</p>;
   }
 
   return (
-    <ul className="max-h-40 space-y-1 overflow-y-auto pr-1 text-xs text-muted-foreground">
+    <ul className="max-h-40 space-y-1 overflow-y-auto pe-1 text-xs text-muted-foreground">
       {lines.map((line, index) => (
         // Release-note lines have no stable id; index keys are fine for this
         // static, read-only list.

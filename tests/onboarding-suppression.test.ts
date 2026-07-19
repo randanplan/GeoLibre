@@ -86,7 +86,14 @@ describe("shouldSuppressOnboarding", () => {
   it("keeps the wizard for truthy, empty, or bare welcome values", () => {
     // An empty `?welcome=` or a bare `?welcome` flag is a no-op (unlike
     // `?maponly`), so the wizard still shows.
-    for (const search of ["?welcome=1", "?welcome=true", "?welcome=on", "?welcome=yes", "?welcome=", "?welcome"]) {
+    for (const search of [
+      "?welcome=1",
+      "?welcome=true",
+      "?welcome=on",
+      "?welcome=yes",
+      "?welcome=",
+      "?welcome",
+    ]) {
       withSearch(search);
       assert.equal(shouldSuppressOnboarding(), false, search);
     }
@@ -95,5 +102,29 @@ describe("shouldSuppressOnboarding", () => {
   it("shows the wizard when window is undefined (SSR)", () => {
     delete (globalThis as { window?: unknown }).window;
     assert.equal(shouldSuppressOnboarding(), false);
+  });
+
+  it("suppresses the wizard when the build baked in VITE_WELCOME_DISABLED", () => {
+    withSearch("");
+    for (const value of ["1", "true", "TRUE", " 1 "]) {
+      assert.equal(
+        shouldSuppressOnboarding({ VITE_WELCOME_DISABLED: value }),
+        true,
+        `env=${value}`,
+      );
+    }
+  });
+
+  it("keeps the wizard for falsy, empty, or non-string env values", () => {
+    withSearch("");
+    for (const value of ["0", "false", "off", "", undefined, true, 1]) {
+      assert.equal(
+        shouldSuppressOnboarding({ VITE_WELCOME_DISABLED: value }),
+        false,
+        `env=${String(value)}`,
+      );
+    }
+    // No env at all (the node test runtime has no import.meta.env).
+    assert.equal(shouldSuppressOnboarding(undefined), false);
   });
 });

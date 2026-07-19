@@ -1,8 +1,5 @@
 import { DEFAULT_PROJECT_NAME, useAppStore } from "@geolibre/core";
-import {
-  DEFAULT_BUILT_IN_CONTROL_VISIBILITY,
-  type MapController,
-} from "@geolibre/map";
+import { DEFAULT_BUILT_IN_CONTROL_VISIBILITY, type MapController } from "@geolibre/map";
 import {
   closeDuckDBLayerPanel,
   closeEarthEnginePanel,
@@ -25,10 +22,16 @@ import {
   setAnnotationLabels,
   setBasemapControlLabels,
   setGraticuleLabels,
+  setMapillaryLabels,
+  setOpenAerialMapLabels,
+  setSourceCoopLabels,
   setReverseGeocodeLabels,
+  setTimelapseLabels,
   DECK_VIZ_PLUGIN_ID,
   DIRECTIONS_PLUGIN_ID,
   GRATICULE_PLUGIN_ID,
+  CLOUDS_PLUGIN_ID,
+  PRECIPITATION_PLUGIN_ID,
   REVERSE_GEOCODE_PLUGIN_ID,
   EFFECTS_PLUGIN_ID,
 } from "@geolibre/plugins";
@@ -49,6 +52,7 @@ import {
   FolderGit2,
   FolderOpen,
   Globe,
+  Grid2x2,
   Info,
   Keyboard,
   Link2,
@@ -56,6 +60,7 @@ import {
   MapPin,
   MessageSquare,
   Moon,
+  Palette,
   Printer,
   RefreshCw,
   Save,
@@ -68,23 +73,15 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  createAppAPI,
-  getPluginManager,
-  usePluginRegistry,
-} from "../../hooks/usePlugins";
+import { createAppAPI, getPluginManager, usePluginRegistry } from "../../hooks/usePlugins";
 import { useConsentGatedActions } from "../../hooks/useConsentGatedActions";
 import { useOsmPbfLoader } from "../../hooks/useOsmPbfLoader";
-import { useProjectFileActions } from "../../hooks/useProjectFileActions";
+import type { ProjectFileActions } from "../../hooks/useProjectFileActions";
 import { useToolbarPanels } from "../../hooks/useToolbarPanels";
 import type { ThemeMode } from "../../hooks/useThemeMode";
 import { isTauri } from "../../lib/tauri-io";
 import { useDesktopSettingsStore } from "../../hooks/useDesktopSettings";
-import {
-  MENU_MANAGED_PLUGIN_IDS,
-  isMenuVisible,
-  isPluginVisible,
-} from "../../lib/ui-profile";
+import { MENU_MANAGED_PLUGIN_IDS, isMenuVisible, isPluginVisible } from "../../lib/ui-profile";
 import { CommandPalette } from "../command/CommandPalette";
 import { KeyboardShortcutsDialog } from "../command/KeyboardShortcutsDialog";
 import { useGlobalShortcuts } from "../../hooks/useGlobalShortcuts";
@@ -92,6 +89,11 @@ import { useViewportHistory } from "../../hooks/useViewportHistory";
 import type { Command } from "../../lib/commands";
 import { IS_STORE_BUILD } from "../../lib/updates";
 import { AddDataDialog, type AddDataKind } from "./AddDataDialog";
+import {
+  OPEN_ADD_DATA_EVENT,
+  type OpenAddDataDetail,
+  type OpenAddDataPostgres,
+} from "./add-data/open-add-data";
 import { AddNetcdfDialog } from "./AddNetcdfDialog";
 import { AboutDialog } from "./AboutDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -104,10 +106,10 @@ import { SetViewDialog } from "./SetViewDialog";
 import { PrintLayoutDialog } from "./PrintLayoutDialog";
 import { LoadFeaturesIntoEditorDialog } from "./LoadFeaturesIntoEditorDialog";
 import { FieldCollectionDialog } from "./FieldCollectionDialog";
+import { GpsTrackingDialog } from "./GpsTrackingDialog";
 import { RecordTourDialog } from "./RecordTourDialog";
+import { RecordVideoDialog } from "./RecordVideoDialog";
 import { GeoreferencerDialog } from "./GeoreferencerDialog";
-import { OfflineRegionDialog } from "./OfflineRegionDialog";
-import { OfflineManagerDialog } from "./OfflineManagerDialog";
 import { AddDataMenu } from "./toolbar/AddDataMenu";
 import { ConsentNoticeDialogs } from "./toolbar/ConsentNoticeDialogs";
 import { ControlsMenu } from "./toolbar/ControlsMenu";
@@ -120,6 +122,7 @@ import { PluginToolbarMenus } from "./toolbar/PluginToolbarMenus";
 import { ProcessingMenu } from "./toolbar/ProcessingMenu";
 import { ProjectFileDialogs } from "./toolbar/ProjectFileDialogs";
 import { ProjectMenu } from "./toolbar/ProjectMenu";
+import { googleEarthUrl, googleMapsUrl } from "../../lib/external-map-links";
 import {
   ADD_DATA_KIND_COMMANDS,
   ALL_BUILT_IN_CONTROL_IDS,
@@ -149,8 +152,14 @@ interface TopToolbarProps {
   // Lifted to DesktopShell so the on-canvas status badge can share one live
   // session (calling useCollaboration twice would open two sockets).
   collaboration: CollaborationApi;
+  // Lifted to DesktopShell so the toolbar and the Browser panel share one
+  // instance — two would not coordinate their in-flight "open recent" aborts.
+  projectFiles: ProjectFileActions;
   onOpenDiagnostics: () => void;
   onToggleThemeMode: () => void;
+  // Opens the Offline Basemap Extract panel, mounted in DesktopShell over the
+  // map so it can stay non-modal (the map is interactive for drawing a bbox).
+  onOpenBasemapExtract: () => void;
 }
 
 export function TopToolbar({
@@ -162,10 +171,12 @@ export function TopToolbar({
   showProjectInfo = true,
   themeMode,
   collaboration,
+  projectFiles,
   onOpenDiagnostics,
   onToggleThemeMode,
+  onOpenBasemapExtract,
 }: TopToolbarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // The reverse-geocode plugin lives in the framework-agnostic plugins package
   // and cannot call t() itself, so push the translated popup strings into it
   // here and refresh them whenever the active language changes.
@@ -177,8 +188,7 @@ export function TopToolbar({
       failed: t("geocode.reverseFailed"),
     });
     setBasemapControlLabels({
-      confirmStyleReplace: (name, count) =>
-        t("basemaps.confirmStyleReplace", { name, count }),
+      confirmStyleReplace: (name, count) => t("basemaps.confirmStyleReplace", { name, count }),
     });
     setAnnotationLabels({
       toolbar: t("annotations.toolbar"),
@@ -201,13 +211,118 @@ export function TopToolbar({
       clearAll: t("annotations.clearAll"),
       textPlaceholder: t("annotations.textPlaceholder"),
     });
+    setMapillaryLabels({
+      title: t("mapillary.title"),
+      getTitle: () => i18n.t("mapillary.title"),
+      hint: t("mapillary.hint"),
+      noToken: t("mapillary.noToken"),
+      tokenPlaceholder: t("mapillary.tokenPlaceholder"),
+      tokenSave: t("mapillary.tokenSave"),
+      tokenHelp: t("mapillary.tokenHelp"),
+      tokenLabel: t("mapillary.tokenLabel"),
+      loading: t("mapillary.loading"),
+      loadError: t("mapillary.loadError"),
+      coverageLines: t("mapillary.coverageLines"),
+      coveragePoints: t("mapillary.coveragePoints"),
+    });
+    setOpenAerialMapLabels({
+      hint: t("openAerialMap.hint"),
+      search: t("openAerialMap.search"),
+      loadMore: t("openAerialMap.loadMore"),
+      searching: t("openAerialMap.searching"),
+      loadingMore: t("openAerialMap.loadingMore"),
+      noResults: t("openAerialMap.noResults"),
+      showing: (shown, total) => t("openAerialMap.showing", { shown, total }),
+      searchError: (message) => t("openAerialMap.searchError", { message }),
+      add: t("openAerialMap.add"),
+      remove: t("openAerialMap.remove"),
+      zoom: t("openAerialMap.zoom"),
+      download: t("openAerialMap.download"),
+      metadata: t("openAerialMap.metadata"),
+      addTitle: t("openAerialMap.addTitle"),
+      removeTitle: t("openAerialMap.removeTitle"),
+      addUnavailableTitle: t("openAerialMap.addUnavailableTitle"),
+      zoomTitle: t("openAerialMap.zoomTitle"),
+      downloadTitle: t("openAerialMap.downloadTitle"),
+      metadataTitle: t("openAerialMap.metadataTitle"),
+      modeView: t("openAerialMap.modeView"),
+      modeDraw: t("openAerialMap.modeDraw"),
+      modeBbox: t("openAerialMap.modeBbox"),
+      drawHint: t("openAerialMap.drawHint"),
+      drawStart: t("openAerialMap.drawStart"),
+      drawCancel: t("openAerialMap.drawCancel"),
+      drawnBox: (box) => t("openAerialMap.drawnBox", { box }),
+      coordWest: t("openAerialMap.coordWest"),
+      coordSouth: t("openAerialMap.coordSouth"),
+      coordEast: t("openAerialMap.coordEast"),
+      coordNorth: t("openAerialMap.coordNorth"),
+      coordSearch: t("openAerialMap.coordSearch"),
+      bboxInvalid: t("openAerialMap.bboxInvalid"),
+      footprintsLayer: t("openAerialMap.footprintsLayer"),
+      footprintUnavailable: t("openAerialMap.footprintUnavailable"),
+      metadataHeading: t("openAerialMap.metadataHeading"),
+      close: t("openAerialMap.close"),
+      metaTitle: t("openAerialMap.metaTitle"),
+      metaProvider: t("openAerialMap.metaProvider"),
+      metaPlatform: t("openAerialMap.metaPlatform"),
+      metaResolution: t("openAerialMap.metaResolution"),
+      metaAcquired: t("openAerialMap.metaAcquired"),
+      metaBounds: t("openAerialMap.metaBounds"),
+      metaSource: t("openAerialMap.metaSource"),
+      metaRaw: t("openAerialMap.metaRaw"),
+    });
+    setSourceCoopLabels({
+      hint: t("sourceCoop.hint"),
+      searchPlaceholder: t("sourceCoop.searchPlaceholder"),
+      search: t("sourceCoop.search"),
+      searching: t("sourceCoop.searching"),
+      loading: t("sourceCoop.loading"),
+      loadError: (message) => t("sourceCoop.loadError", { message }),
+      noResults: t("sourceCoop.noResults"),
+      retry: t("sourceCoop.retry"),
+      featured: t("sourceCoop.featured"),
+      showing: (shown, total) => t("sourceCoop.showing", { shown, total }),
+      browseAccount: (account) => t("sourceCoop.browseAccount", { account }),
+      back: t("sourceCoop.back"),
+      files: t("sourceCoop.files"),
+      noFiles: t("sourceCoop.noFiles"),
+      loadingFiles: t("sourceCoop.loadingFiles"),
+      loadMore: t("sourceCoop.loadMore"),
+      parent: t("sourceCoop.parent"),
+      add: t("sourceCoop.add"),
+      adding: t("sourceCoop.adding"),
+      added: t("sourceCoop.added"),
+      stream: t("sourceCoop.stream"),
+      streaming: t("sourceCoop.streaming"),
+      remove: t("sourceCoop.remove"),
+      download: t("sourceCoop.download"),
+      copyUrl: t("sourceCoop.copyUrl"),
+      copied: t("sourceCoop.copied"),
+      openProduct: t("sourceCoop.openProduct"),
+      addTitle: t("sourceCoop.addTitle"),
+      streamTitle: t("sourceCoop.streamTitle"),
+      removeTitle: t("sourceCoop.removeTitle"),
+      downloadTitle: t("sourceCoop.downloadTitle"),
+      copyUrlTitle: t("sourceCoop.copyUrlTitle"),
+      openProductTitle: t("sourceCoop.openProductTitle"),
+      unsupportedTitle: t("sourceCoop.unsupportedTitle"),
+      addError: (message) => t("sourceCoop.addError", { message }),
+      largeFileWarning: (size) => t("sourceCoop.largeFileWarning", { size }),
+      streamHint: (size) => t("sourceCoop.streamHint", { size }),
+      tooLargeToOpen: (size, limit) => t("sourceCoop.tooLargeToOpen", { size, limit }),
+    });
     setGraticuleLabels({
       title: t("graticule.title"),
+      getTitle: () => i18n.t("graticule.title"),
       controlTitle: t("graticule.controlTitle"),
+      gridType: t("graticule.gridType"),
+      typeGeographic: t("graticule.typeGeographic"),
+      typeUtm: t("graticule.typeUtm"),
       spacing: t("graticule.spacing"),
       spacingAuto: t("graticule.spacingAuto"),
       spacingFixed: t("graticule.spacingFixed"),
       interval: t("graticule.interval"),
+      intervalMeters: t("graticule.intervalMeters"),
       lineColor: t("graticule.lineColor"),
       lineWidth: t("graticule.lineWidth"),
       lineOpacity: t("graticule.lineOpacity"),
@@ -222,6 +337,24 @@ export function TopToolbar({
       labelColor: t("graticule.labelColor"),
       labelSize: t("graticule.labelSize"),
     });
+    setTimelapseLabels({
+      title: t("timelapse.title"),
+      provider: t("timelapse.provider"),
+      legend: t("timelapse.legend"),
+      yearSlider: t("timelapse.yearSlider"),
+      play: t("timelapse.play"),
+      pause: t("timelapse.pause"),
+      speed: t("timelapse.speed"),
+      secondsPerYear: t("timelapse.secondsPerYear"),
+      secondsPerYearSuffix: t("timelapse.secondsPerYearSuffix"),
+      loop: t("timelapse.loop"),
+      record: t("timelapse.record"),
+      stopRecording: t("timelapse.stopRecording"),
+      recording: t("timelapse.recording"),
+      recordingFailed: t("timelapse.recordingFailed"),
+      recordingUnsupported: t("timelapse.recordingUnsupported"),
+      loadingTiles: t("timelapse.loadingTiles"),
+    });
   }, [t]);
 
   const setProcessingOpen = useAppStore((s) => s.setProcessingOpen);
@@ -229,18 +362,15 @@ export function TopToolbar({
   const setVectorToolOpen = useAppStore((s) => s.setVectorToolOpen);
   const setGeocodeOpen = useAppStore((s) => s.setGeocodeOpen);
   const setModelBuilderOpen = useAppStore((s) => s.setModelBuilderOpen);
+  const setStyleManagerOpen = useAppStore((s) => s.setStyleManagerOpen);
   const setRasterToolOpen = useAppStore((s) => s.setRasterToolOpen);
   const setSegmentationOpen = useAppStore((s) => s.setSegmentationOpen);
+  const setObjectDetectionOpen = useAppStore((s) => s.setObjectDetectionOpen);
+  const setSegmentEverythingOpen = useAppStore((s) => s.setSegmentEverythingOpen);
   const setSqlWorkspaceOpen = useAppStore((s) => s.setSqlWorkspaceOpen);
-  const setLoadEditorFeaturesOpen = useAppStore(
-    (s) => s.setLoadEditorFeaturesOpen,
-  );
-  const loadEditorFeaturesOpen = useAppStore(
-    (s) => s.ui.loadEditorFeaturesOpen,
-  );
-  const loadEditorFeaturesLayerId = useAppStore(
-    (s) => s.ui.loadEditorFeaturesLayerId,
-  );
+  const setLoadEditorFeaturesOpen = useAppStore((s) => s.setLoadEditorFeaturesOpen);
+  const loadEditorFeaturesOpen = useAppStore((s) => s.ui.loadEditorFeaturesOpen);
+  const loadEditorFeaturesLayerId = useAppStore((s) => s.ui.loadEditorFeaturesLayerId);
   const setPythonConsoleOpen = useAppStore((s) => s.setPythonConsoleOpen);
   const setAssistantOpen = useAppStore((s) => s.setAssistantOpen);
   const projectName = useAppStore((s) => s.projectName);
@@ -251,9 +381,7 @@ export function TopToolbar({
   // session-status badge can reopen it from outside this component tree (#754).
   // The dialog itself is rendered by DesktopShell (not here) so it survives
   // toolbar-hidden layouts; the toolbar only triggers it via this setter.
-  const setCollaborateDialogOpen = useAppStore(
-    (s) => s.setCollaborateDialogOpen,
-  );
+  const setCollaborateDialogOpen = useAppStore((s) => s.setCollaborateDialogOpen);
 
   const {
     plugins,
@@ -267,9 +395,7 @@ export function TopToolbar({
   } = usePluginRegistry();
   // Plugin ids hidden by the active UI profile (issue #500). Recompute only when
   // the profile changes so the Plugins menu can drop them.
-  const uiProfile = useDesktopSettingsStore(
-    (state) => state.desktopSettings.uiProfile,
-  );
+  const uiProfile = useDesktopSettingsStore((state) => state.desktopSettings.uiProfile);
   const hiddenPluginIds = useMemo(
     () =>
       new Set(
@@ -296,7 +422,6 @@ export function TopToolbar({
   const appApi = useMemo(() => createAppAPI(mapControllerRef), [mapControllerRef]);
 
   const panels = useToolbarPanels(appApi);
-  const projectFiles = useProjectFileActions(mapControllerRef);
   const osmPbf = useOsmPbfLoader(appApi, projectFiles.setActionError);
   const consent = useConsentGatedActions({ appApi, isActive, toggle });
   const viewportHistory = useViewportHistory(
@@ -309,9 +434,7 @@ export function TopToolbar({
   // candidate doesn't blur the project-name field mid-composition.
   const projectNameComposingRef = useRef(false);
 
-  const [controlsVisible, setControlsVisible] = useState<
-    Record<ToolbarMapControl, boolean>
-  >(() =>
+  const [controlsVisible, setControlsVisible] = useState<Record<ToolbarMapControl, boolean>>(() =>
     MAP_CONTROL_ITEMS.reduce(
       (acc, { id }) => {
         acc[id] = DEFAULT_BUILT_IN_CONTROL_VISIBILITY[id];
@@ -321,11 +444,35 @@ export function TopToolbar({
     ),
   );
   const [addDataKind, setAddDataKind] = useState<AddDataKind | null>(null);
+  // PostgreSQL prefill (saved connection / clicked table) from the Browser panel.
+  const [addDataPostgres, setAddDataPostgres] = useState<OpenAddDataPostgres | undefined>(
+    undefined,
+  );
+  // Drop the prefill whenever the dialog isn't on the PostgreSQL source, so a
+  // stale prefill can't leak into a later postgres open reached via a path that
+  // sets addDataKind directly (command palette / menus) rather than through the
+  // Browser-panel event that sets the prefill. The event sets the prefill and
+  // kind together, so this never clears a freshly-set prefill.
+  useEffect(() => {
+    if (addDataKind !== "postgres") setAddDataPostgres(undefined);
+  }, [addDataKind]);
+  // Let any panel (e.g. the Browser panel's "New connection" action) open the
+  // Add Data dialog at a given kind without prop-drilling, mirroring
+  // openSettingsSection. This toolbar owns the dialog + its kind state.
+  useEffect(() => {
+    const onOpenAddData = (event: Event) => {
+      const detail = (event as CustomEvent<OpenAddDataDetail>).detail;
+      if (detail?.kind) {
+        setAddDataPostgres(detail.postgres);
+        setAddDataKind(detail.kind);
+      }
+    };
+    window.addEventListener(OPEN_ADD_DATA_EVENT, onOpenAddData);
+    return () => window.removeEventListener(OPEN_ADD_DATA_EVENT, onOpenAddData);
+  }, []);
   // Deck.gl Layer kind the Add Data dialog opens on (e.g. the 3D-model entry
   // jumps straight to the scenegraph layer type).
-  const [addDataDeckVizKind, setAddDataDeckVizKind] = useState<
-    string | undefined
-  >(undefined);
+  const [addDataDeckVizKind, setAddDataDeckVizKind] = useState<string | undefined>(undefined);
   const [netcdfDialogOpen, setNetcdfDialogOpen] = useState(false);
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [managePluginsOpen, setManagePluginsOpen] = useState(false);
@@ -333,10 +480,10 @@ export function TopToolbar({
   const [galleryDialogOpen, setGalleryDialogOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [printLayoutOpen, setPrintLayoutOpen] = useState(false);
-  const [offlineRegionOpen, setOfflineRegionOpen] = useState(false);
-  const [offlineManagerOpen, setOfflineManagerOpen] = useState(false);
   const [fieldCollectionOpen, setFieldCollectionOpen] = useState(false);
+  const [gpsTrackingOpen, setGpsTrackingOpen] = useState(false);
   const [recordTourOpen, setRecordTourOpen] = useState(false);
+  const [recordVideoOpen, setRecordVideoOpen] = useState(false);
   const [georeferencerOpen, setGeoreferencerOpen] = useState(false);
   const [setViewOpen, setSetViewOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -387,9 +534,7 @@ export function TopToolbar({
   const toggleMapControl = (control: ToolbarMapControl) => {
     setControlsVisible((current) => {
       const visible = !current[control];
-      const updated =
-        mapControllerRef.current?.setBuiltInControlVisible(control, visible) ??
-        false;
+      const updated = mapControllerRef.current?.setBuiltInControlVisible(control, visible) ?? false;
       return updated ? { ...current, [control]: visible } : current;
     });
   };
@@ -611,6 +756,22 @@ export function TopToolbar({
       icon: Sparkles,
       run: () => setSegmentationOpen(true),
     },
+    {
+      id: "proc.objectDetection",
+      title: t("toolbar.command.objectDetection"),
+      group: t("toolbar.commandGroup.processing"),
+      keywords: "object detection yolo onnx ai detect imagery boxes",
+      icon: Sparkles,
+      run: () => setObjectDetectionOpen(true),
+    },
+    {
+      id: "proc.segmentEverything",
+      title: t("toolbar.command.segmentEverything"),
+      group: t("toolbar.commandGroup.processing"),
+      keywords: "segment everything slimsam sam automatic mask imagery polygons",
+      icon: Sparkles,
+      run: () => setSegmentEverythingOpen(true),
+    },
     ...CONVERSION_COMMANDS.map(({ kind, titleKey }) => ({
       id: `proc.conversion.${kind}`,
       title: t(titleKey),
@@ -737,6 +898,8 @@ export function TopToolbar({
       group: t("toolbar.commandGroup.view"),
       keywords: "back history viewport extent previous undo pan zoom",
       icon: ArrowLeft,
+      // "[" / "]" step through viewport history (unbound by MapLibre).
+      shortcut: { key: "[" },
       run: viewportHistory.goBack,
     },
     {
@@ -745,6 +908,7 @@ export function TopToolbar({
       group: t("toolbar.commandGroup.view"),
       keywords: "forward history viewport extent next redo pan zoom",
       icon: ArrowRight,
+      shortcut: { key: "]" },
       run: viewportHistory.goForward,
     },
     {
@@ -753,7 +917,21 @@ export function TopToolbar({
       group: t("toolbar.commandGroup.view"),
       keywords: "north bearing rotation rotate compass orientation",
       icon: Compass,
+      // Plain "N" (Google Earth Pro's north-up shortcut). No modifier, so it
+      // never clashes with ⌘/Ctrl+N (New project) and leaves MapLibre's own
+      // arrow/zoom keys untouched.
+      shortcut: { key: "n" },
       run: () => mapControllerRef.current?.resetNorth(),
+    },
+    {
+      id: "view.reset-pitch",
+      title: t("toolbar.command.resetPitch"),
+      group: t("toolbar.commandGroup.view"),
+      keywords: "pitch tilt top down overhead flat level plan 2d reset",
+      icon: Grid2x2,
+      // Plain "U" resets pitch to a top-down view (Google Earth Pro's shortcut).
+      shortcut: { key: "u" },
+      run: () => mapControllerRef.current?.resetPitch(),
     },
     {
       id: "view.reset-pitch-bearing",
@@ -761,13 +939,16 @@ export function TopToolbar({
       group: t("toolbar.commandGroup.view"),
       keywords: "pitch bearing tilt rotation north flat level 3d",
       icon: Mountain,
+      // Plain "R" resets pitch and bearing (like Google Earth Pro's reset view).
+      shortcut: { key: "r" },
       run: () => mapControllerRef.current?.resetNorthPitch(),
     },
     {
       id: "view.set-view",
       title: t("toolbar.command.setView"),
       group: t("toolbar.commandGroup.view"),
-      keywords: "set view go to coordinates center zoom pitch bearing camera location longitude latitude",
+      keywords:
+        "set view go to coordinates center zoom pitch bearing camera location longitude latitude",
       icon: Crosshair,
       run: () => setSetViewOpen(true),
     },
@@ -855,6 +1036,8 @@ export function TopToolbar({
           plugin.id !== DIRECTIONS_PLUGIN_ID &&
           plugin.id !== REVERSE_GEOCODE_PLUGIN_ID &&
           plugin.id !== GRATICULE_PLUGIN_ID &&
+          plugin.id !== CLOUDS_PLUGIN_ID &&
+          plugin.id !== PRECIPITATION_PLUGIN_ID &&
           plugin.id !== DECK_VIZ_PLUGIN_ID,
       )
       .map((plugin) => ({
@@ -872,6 +1055,14 @@ export function TopToolbar({
       keywords: "install external plugin marketplace",
       run: () => setManagePluginsOpen(true),
     },
+    {
+      id: "settings.style-manager",
+      title: t("toolbar.command.styleManager"),
+      group: t("toolbar.commandGroup.settings"),
+      keywords: "style manager saved styles symbol ramp label preset library",
+      icon: Palette,
+      run: () => setStyleManagerOpen(true),
+    },
   ];
 
   useGlobalShortcuts({
@@ -886,11 +1077,8 @@ export function TopToolbar({
   // reduce toolbar wrapping. The menu stays reachable other ways (e.g. Edit's
   // actions also have keyboard shortcuts). To make a future menu hideable, give
   // its trigger Button this class instead of `toolbarButtonClass`.
-  const toolbarSecondaryButtonClass = cn(
-    toolbarButtonClass,
-    "hidden md:inline-flex",
-  );
-  const toolbarIconClassName = cn("h-3.5 w-3.5", showLabels && "sm:mr-1");
+  const toolbarSecondaryButtonClass = cn(toolbarButtonClass, "hidden md:inline-flex");
+  const toolbarIconClassName = cn("h-3.5 w-3.5", showLabels && "sm:me-1");
   const appTitle = isTauri() ? "GeoLibre Desktop" : "GeoLibre";
   const renderToolbarLabel = (label: string) =>
     showLabels ? <span className="hidden sm:inline">{label}</span> : null;
@@ -912,11 +1100,9 @@ export function TopToolbar({
             "flex-wrap px-2 md:flex-nowrap md:overflow-x-auto",
       )}
     >
-      <span className="mr-1 flex shrink-0 items-center gap-1.5 text-sm font-semibold text-primary md:mr-2">
+      <span className="me-1 flex shrink-0 items-center gap-1.5 text-sm font-semibold text-primary md:me-2">
         <Map className="h-4 w-4" />
-        {showProjectInfo ? (
-          <span className="hidden sm:inline">{appTitle}</span>
-        ) : null}
+        {showProjectInfo ? <span className="hidden sm:inline">{appTitle}</span> : null}
       </span>
       {isMenuVisible(uiProfile, "project") && (
         <ProjectMenu
@@ -926,18 +1112,23 @@ export function TopToolbar({
           onOpenFromFile={() => void projectFiles.handleOpenFromFile()}
           onOpenFromUrl={() => projectFiles.setProjectUrlDialogOpen(true)}
           onOpenGallery={() => setGalleryDialogOpen(true)}
-          onOpenRecent={(path) => void projectFiles.handleOpenRecent(path)}
+          onOpenRecent={(path) => {
+            void projectFiles.handleOpenRecent(path).then((error) => {
+              if (error) projectFiles.setActionError(error);
+            });
+          }}
           onSave={() => void projectFiles.handleSave()}
           onSaveAs={() => void projectFiles.handleSaveAs()}
           onShare={() => setShareDialogOpen(true)}
           onExportHtml={() => void projectFiles.handleExportHtml()}
           onCollaborate={() => setCollaborateDialogOpen(true)}
           onPrintLayout={() => setPrintLayoutOpen(true)}
-          onDownloadOffline={() => setOfflineRegionOpen(true)}
-          onManageOffline={() => setOfflineManagerOpen(true)}
+          onOpenOfflineBasemap={onOpenBasemapExtract}
         />
       )}
-      {isMenuVisible(uiProfile, "edit") && <EditMenu chrome={chrome} />}
+      {isMenuVisible(uiProfile, "edit") && (
+        <EditMenu chrome={chrome} mapControllerRef={mapControllerRef} />
+      )}
       {isMenuVisible(uiProfile, "view") && (
         <ViewMenu
           chrome={chrome}
@@ -955,10 +1146,20 @@ export function TopToolbar({
           }}
           onResetNorth={() => mapControllerRef.current?.resetNorth()}
           onResetPitch={() => mapControllerRef.current?.resetPitch()}
-          onResetPitchBearing={() =>
-            mapControllerRef.current?.resetNorthPitch()
-          }
+          onResetPitchBearing={() => mapControllerRef.current?.resetNorthPitch()}
           onSetView={() => setSetViewOpen(true)}
+          onViewInGoogleEarth={() => {
+            const map = mapControllerRef.current?.getMap();
+            if (!map) return;
+            const center = map.getCenter();
+            void openExternalLink(googleEarthUrl(center.lat, center.lng, map.getZoom()));
+          }}
+          onViewInGoogleMaps={() => {
+            const map = mapControllerRef.current?.getMap();
+            if (!map) return;
+            const center = map.getCenter();
+            void openExternalLink(googleMapsUrl(center.lat, center.lng, map.getZoom()));
+          }}
           onZoomIn={() => mapControllerRef.current?.zoomIn()}
           onZoomOut={() => mapControllerRef.current?.zoomOut()}
         />
@@ -1000,6 +1201,8 @@ export function TopToolbar({
           directionsActive={isActive(DIRECTIONS_PLUGIN_ID)}
           reverseGeocodeActive={isActive(REVERSE_GEOCODE_PLUGIN_ID)}
           graticuleActive={isActive(GRATICULE_PLUGIN_ID)}
+          cloudsActive={isActive(CLOUDS_PLUGIN_ID)}
+          precipitationActive={isActive(PRECIPITATION_PLUGIN_ID)}
           onToggleMapControl={toggleMapControl}
           onToggleEffects={() => toggle(EFFECTS_PLUGIN_ID, appApi)}
           getEffectsSettings={getEffectsSettings}
@@ -1008,8 +1211,12 @@ export function TopToolbar({
           onToggleDirections={consent.handleToggleDirections}
           onToggleReverseGeocode={consent.handleToggleReverseGeocode}
           onToggleGraticule={() => toggle(GRATICULE_PLUGIN_ID, appApi)}
+          onToggleClouds={() => toggle(CLOUDS_PLUGIN_ID, appApi)}
+          onTogglePrecipitation={() => toggle(PRECIPITATION_PLUGIN_ID, appApi)}
           onOpenFieldCollection={() => setFieldCollectionOpen(true)}
+          onOpenGpsTracking={() => setGpsTrackingOpen(true)}
           onOpenRecordTour={() => setRecordTourOpen(true)}
+          onOpenRecordVideo={() => setRecordVideoOpen(true)}
         />
       )}
       {isMenuVisible(uiProfile, "plugins") && (
@@ -1049,23 +1256,24 @@ export function TopToolbar({
         onOpenChange={setPrintLayoutOpen}
         mapControllerRef={mapControllerRef}
       />
-      <OfflineRegionDialog
-        open={offlineRegionOpen}
-        onOpenChange={setOfflineRegionOpen}
-        mapControllerRef={mapControllerRef}
-      />
-      <OfflineManagerDialog
-        open={offlineManagerOpen}
-        onOpenChange={setOfflineManagerOpen}
-      />
       <FieldCollectionDialog
         open={fieldCollectionOpen}
         onOpenChange={setFieldCollectionOpen}
         mapControllerRef={mapControllerRef}
       />
+      <GpsTrackingDialog
+        open={gpsTrackingOpen}
+        onOpenChange={setGpsTrackingOpen}
+        mapControllerRef={mapControllerRef}
+      />
       <RecordTourDialog
         open={recordTourOpen}
         onOpenChange={setRecordTourOpen}
+        mapControllerRef={mapControllerRef}
+      />
+      <RecordVideoDialog
+        open={recordVideoOpen}
+        onOpenChange={setRecordVideoOpen}
         mapControllerRef={mapControllerRef}
       />
       <GeoreferencerDialog
@@ -1091,8 +1299,7 @@ export function TopToolbar({
         getProject={async (title) => {
           // Shared projects are opened on another machine where the local files
           // don't exist, so always embed the vector data (never file references).
-          const { content, defaultProjectName } =
-            await projectFiles.buildEmbeddedProject(title);
+          const { content, defaultProjectName } = await projectFiles.buildEmbeddedProject(title);
           // Strip path separators, control chars, and other characters that are
           // illegal in filenames so the server gets a predictable name.
           const safeName = defaultProjectName.replace(
@@ -1108,9 +1315,7 @@ export function TopToolbar({
       <ProjectGalleryDialog
         open={galleryDialogOpen}
         onOpenChange={setGalleryDialogOpen}
-        onOpenProject={(url, authToken) =>
-          projectFiles.openProjectFromShareUrl(url, { authToken })
-        }
+        onOpenProject={(url, authToken) => projectFiles.openProjectFromShareUrl(url, { authToken })}
       />
       {isMenuVisible(uiProfile, "help") && (
         <HelpMenu
@@ -1133,18 +1338,16 @@ export function TopToolbar({
         kind={addDataKind}
         mapControllerRef={mapControllerRef}
         initialDeckVizKind={addDataDeckVizKind}
+        initialPostgres={addDataPostgres}
         onOpenChange={(open: boolean) => {
           if (!open) {
             setAddDataKind(null);
             setAddDataDeckVizKind(undefined);
+            setAddDataPostgres(undefined);
           }
         }}
       />
-      <AddNetcdfDialog
-        open={netcdfDialogOpen}
-        appApi={appApi}
-        onOpenChange={setNetcdfDialogOpen}
-      />
+      <AddNetcdfDialog open={netcdfDialogOpen} appApi={appApi} onOpenChange={setNetcdfDialogOpen} />
       <ProjectFileDialogs projectFiles={projectFiles} />
       <ConsentNoticeDialogs consent={consent} />
       <OsmPbfDialogs osmPbf={osmPbf} />
@@ -1164,7 +1367,7 @@ export function TopToolbar({
         commands={commands}
         onOpenChange={setShortcutsOpen}
       />
-      <div className="ml-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="ms-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
         <Button
           aria-label={
             themeMode === "dark"

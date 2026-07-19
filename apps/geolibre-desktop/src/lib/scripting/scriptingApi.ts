@@ -10,6 +10,7 @@ import {
 import { SKETCHES_SOURCE_KIND } from "@geolibre/plugins";
 import type { Feature, FeatureCollection } from "geojson";
 import type { MapController } from "@geolibre/map";
+import { beginProcessingRun } from "../processing-history";
 import { captureMapImage } from "../print-layout-export";
 
 // The scripting command surface, shared by every programmatic entry point: the
@@ -19,9 +20,7 @@ import { captureMapImage } from "../print-layout-export";
 // console expose identical behaviour.
 
 /** A single command handler: params object in, value (or promise) out. */
-export type ScriptingHandler = (
-  params: Record<string, unknown>,
-) => unknown | Promise<unknown>;
+export type ScriptingHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 export type ScriptingHandlers = Record<string, ScriptingHandler>;
 
@@ -30,8 +29,13 @@ export interface ScriptingDeps {
   getController: () => MapController | null;
 }
 
-/** Combined client-side algorithm registry, matching the in-app dialogs. */
-function allAlgorithms(): ProcessingAlgorithm[] {
+/**
+ * Combined client-side algorithm registry, matching the in-app dialogs. This
+ * is the list `runAlgorithm` (and thus the Python API's `m.run_algorithm`)
+ * resolves tool ids against; the Processing History panel imports it so its
+ * "Copy as Python" eligibility can never drift from what actually runs.
+ */
+export function allAlgorithms(): ProcessingAlgorithm[] {
   return [...ALGORITHMS, ...VECTOR_TOOLS, ...H3_TOOLS, ...STATISTICS_TOOLS];
 }
 
@@ -63,9 +67,7 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
       return null;
     },
     fitBounds: (params) => {
-      getController()?.fitBounds(
-        params.bounds as [number, number, number, number],
-      );
+      getController()?.fitBounds(params.bounds as [number, number, number, number]);
       return null;
     },
     setView: (params) => {
@@ -78,15 +80,12 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
     // -- queries ------------------------------------------------------------
     identify: (params) => {
       const lngLat = params.lngLat as [number, number];
-      const layerId =
-        typeof params.layerId === "string" ? params.layerId : undefined;
+      const layerId = typeof params.layerId === "string" ? params.layerId : undefined;
       return getController()?.identifyFeatures(lngLat, layerId) ?? [];
     },
     getLayerFeatures: (params) => {
       const layerId = requireLayerId(params);
-      const layer = useAppStore
-        .getState()
-        .layers.find((item) => item.id === layerId);
+      const layer = useAppStore.getState().layers.find((item) => item.id === layerId);
       if (!layer) throw new Error(`No layer with id "${layerId}"`);
       return layer.geojson?.features ?? [];
     },
@@ -137,9 +136,7 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
       return null;
     },
     setVisibility: (params) => {
-      useAppStore
-        .getState()
-        .setLayerVisibility(requireLayerId(params), Boolean(params.visible));
+      useAppStore.getState().setLayerVisibility(requireLayerId(params), Boolean(params.visible));
       return null;
     },
     setOpacity: (params) => {
@@ -148,18 +145,13 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
       if (!Number.isFinite(raw)) {
         throw new Error("setOpacity: opacity must be a finite number");
       }
-      useAppStore
-        .getState()
-        .setLayerOpacity(layerId, Math.min(1, Math.max(0, raw)));
+      useAppStore.getState().setLayerOpacity(layerId, Math.min(1, Math.max(0, raw)));
       return null;
     },
     setStyle: (params) => {
       useAppStore
         .getState()
-        .setLayerStyle(
-          requireLayerId(params),
-          params.style as Record<string, unknown>,
-        );
+        .setLayerStyle(requireLayerId(params), params.style as Record<string, unknown>);
       return null;
     },
     setBasemap: (params) => {
@@ -167,22 +159,15 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
       // "undefined") and non-http(s) schemes like javascript:/data: that would
       // be persisted into project state and snapshots.
       const url = params.url;
-      if (
-        typeof url !== "string" ||
-        (!/^https?:\/\//i.test(url) && !url.startsWith("/"))
-      ) {
-        throw new Error(
-          "setBasemap: url must be an http(s) or root-relative URL string",
-        );
+      if (typeof url !== "string" || (!/^https?:\/\//i.test(url) && !url.startsWith("/"))) {
+        throw new Error("setBasemap: url must be an http(s) or root-relative URL string");
       }
       useAppStore.getState().setBasemapStyleUrl(url);
       return null;
     },
     zoomToLayer: (params) => {
       const layerId = requireLayerId(params);
-      const layer = useAppStore
-        .getState()
-        .layers.find((item) => item.id === layerId);
+      const layer = useAppStore.getState().layers.find((item) => item.id === layerId);
       if (!layer) throw new Error(`No layer with id "${layerId}"`);
       getController()?.fitLayer(layer);
       return null;
@@ -203,35 +188,62 @@ export function createScriptingHandlers(deps: ScriptingDeps): ScriptingHandlers 
       if (!algo) throw new Error(`Unknown algorithm "${id}"`);
       const logs: string[] = [];
       const resultLayerIds: string[] = [];
-      // duckdb-wasm is browser-only and heavy; import it only when an algorithm
-      // actually runs (also keeps this module importable in plain Node tests).
-      const { createDuckDbCapability } = await import("../duckdb-processing");
-      const ctx: ProcessingContext = {
-        layers: useAppStore.getState().layers,
+      // Track the run for the Processing History panel (#1292), so notebook /
+      // console runs document themselves alongside dialog runs.
+      const tracker = beginProcessingRun({
+        kind: "algorithm",
+        toolId: algo.id,
+        toolName: algo.name,
+        engine: "client",
         parameters: (params.params as Record<string, unknown>) ?? {},
-        log: (message) => logs.push(message),
-        fitBounds: (bounds) => getController()?.fitBounds(bounds),
-        addResultLayer: (name: string, fc: FeatureCollection) => {
-          if (!fc.features.length) {
-            logs.push(`No features produced for "${name}"`);
-            return;
-          }
-          const layerId = useAppStore.getState().addGeoJsonLayer(name, fc);
-          resultLayerIds.push(layerId);
-          const layer = useAppStore
-            .getState()
-            .layers.find((item) => item.id === layerId);
-          if (layer) getController()?.fitLayer(layer);
-        },
-        duckdb: createDuckDbCapability(),
-        viewportBounds: () => {
-          const map = getController()?.getMap();
-          if (!map) return null;
-          const b = map.getBounds();
-          return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
-        },
-      };
-      await algo.run(ctx);
+      });
+      // Registry tools report validation failures via ctx.log("Error: ...")
+      // plus a plain return rather than throwing; capture the last such line
+      // so the run is recorded as failed in the Processing History.
+      let softError: string | null = null;
+      // Everything after beginProcessingRun runs inside one try so setup
+      // failures (the lazy import, DuckDB capability) are recorded too.
+      try {
+        // duckdb-wasm is browser-only and heavy; import it only when an
+        // algorithm actually runs (also keeps this module importable in plain
+        // Node tests).
+        const { createDuckDbCapability } = await import("../duckdb-processing");
+        const ctx: ProcessingContext = {
+          layers: useAppStore.getState().layers,
+          parameters: (params.params as Record<string, unknown>) ?? {},
+          log: (message) => {
+            if (message.startsWith("Error:")) {
+              softError = message.slice("Error:".length).trim();
+            }
+            logs.push(message);
+          },
+          fitBounds: (bounds) => getController()?.fitBounds(bounds),
+          addResultLayer: (name: string, fc: FeatureCollection) => {
+            if (!fc.features.length) {
+              logs.push(`No features produced for "${name}"`);
+              return;
+            }
+            const layerId = useAppStore.getState().addGeoJsonLayer(name, fc);
+            tracker.addOutputLayer(name);
+            resultLayerIds.push(layerId);
+            const layer = useAppStore.getState().layers.find((item) => item.id === layerId);
+            if (layer) getController()?.fitLayer(layer);
+          },
+          duckdb: createDuckDbCapability(),
+          viewportBounds: () => {
+            const map = getController()?.getMap();
+            if (!map) return null;
+            const b = map.getBounds();
+            return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+          },
+        };
+        await algo.run(ctx);
+      } catch (error) {
+        tracker.finish("error", error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+      if (softError) tracker.finish("error", softError);
+      else tracker.finish("success");
       return { logs, resultLayerIds };
     },
 

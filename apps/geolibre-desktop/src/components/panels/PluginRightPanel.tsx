@@ -79,12 +79,7 @@ interface PluginRightPanelProps {
  * @param props.dock - The dock position this instance renders.
  * @returns The plugin panel aside, or null when no panel is docked here.
  */
-export function PluginRightPanel({
-  dock,
-  contentEl,
-  width,
-  onWidthChange,
-}: PluginRightPanelProps) {
+export function PluginRightPanel({ dock, contentEl, width, onWidthChange }: PluginRightPanelProps) {
   const { t } = useTranslation();
   const { activeId, collapsed, dock: activeDock } = useRightPanelState();
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -95,9 +90,7 @@ export function PluginRightPanel({
   // (toward the map). Style-side docks face left (toward the map). The
   // `replace-layers` shared-rail mode is a layers-side dock too.
   const isLayersSide =
-    dock === "left-of-layers" ||
-    dock === "right-of-layers" ||
-    dock === "replace-layers";
+    dock === "left-of-layers" || dock === "right-of-layers" || dock === "replace-layers";
   // The shared-rail modes: the panel shares the Style (replace-style) or Layers
   // (replace-layers) rail (rendered by the host's SharedSidebar), so it has no
   // move buttons and no rail of its own; its collapsed entry lives in that single
@@ -134,10 +127,11 @@ export function PluginRightPanel({
     el.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = width;
+    const dirSign = getComputedStyle(el).direction === "rtl" ? -1 : 1;
     const handleMove = (move: PointerEvent) => {
       // The resizable edge faces away from the dock side: dragging it widens the
       // panel.
-      const delta = isLayersSide ? move.clientX - startX : startX - move.clientX;
+      const delta = dirSign * (isLayersSide ? move.clientX - startX : startX - move.clientX);
       onWidthChange(clamp(startWidth + delta, MIN_WIDTH, MAX_WIDTH));
     };
     const handleEnd = () => {
@@ -162,17 +156,16 @@ export function PluginRightPanel({
       <PanelRight className="h-4 w-4" />
     );
 
-  const borderSide = isLayersSide ? "md:border-r" : "md:border-l";
-  const canMoveLeft = activeDock !== "left-of-layers";
-  const canMoveRight = activeDock !== "right-of-style";
+  const borderSide = isLayersSide ? "md:border-e" : "md:border-s";
+  // Dock names describe the LTR arrangement, so the visual move-left/right
+  // actions and their guards swap in a right-to-left layout.
+  const isRtl = document.documentElement.dir === "rtl";
+  const canMoveLeft = activeDock !== (isRtl ? "right-of-style" : "left-of-layers");
+  const canMoveRight = activeDock !== (isRtl ? "left-of-layers" : "right-of-style");
 
   return (
     <aside
-      aria-label={
-        collapsed
-          ? t("pluginPanel.collapsedLabel", { title: panel.title })
-          : panel.title
-      }
+      aria-label={collapsed ? t("pluginPanel.collapsedLabel", { title: panel.title }) : panel.title}
       style={{ "--plugin-right-panel-width": `${width}px` } as CSSProperties}
       className={
         collapsed
@@ -185,7 +178,7 @@ export function PluginRightPanel({
           role="separator"
           aria-orientation="vertical"
           aria-label={t("pluginPanel.resize")}
-          className={`absolute ${isLayersSide ? "-right-1 border-r" : "-left-1 border-l"} top-0 z-20 hidden h-full w-2 cursor-col-resize touch-none select-none border-transparent hover:border-primary md:block`}
+          className={`absolute ${isLayersSide ? "-end-1 border-e" : "-start-1 border-s"} top-0 z-20 hidden h-full w-2 cursor-col-resize touch-none select-none border-transparent hover:border-primary md:block`}
           onPointerDown={handleResizeStart}
         />
       ) : null}
@@ -225,7 +218,7 @@ export function PluginRightPanel({
                   title={t("pluginPanel.moveLeft")}
                   aria-label={t("pluginPanel.moveLeft")}
                   disabled={!canMoveLeft}
-                  onClick={() => moveActiveRightPanelDock("left")}
+                  onClick={() => moveActiveRightPanelDock(isRtl ? "right" : "left")}
                 >
                   <ArrowLeftToLine className="h-4 w-4" />
                 </Button>
@@ -236,7 +229,7 @@ export function PluginRightPanel({
                   title={t("pluginPanel.moveRight")}
                   aria-label={t("pluginPanel.moveRight")}
                   disabled={!canMoveRight}
-                  onClick={() => moveActiveRightPanelDock("right")}
+                  onClick={() => moveActiveRightPanelDock(isRtl ? "left" : "right")}
                 >
                   <ArrowRightToLine className="h-4 w-4" />
                 </Button>
@@ -252,9 +245,7 @@ export function PluginRightPanel({
                 title={t("pluginPanel.detach")}
                 aria-label={t("pluginPanel.detach")}
                 onClick={() =>
-                  setActiveRightPanelDock(
-                    isLayersSide ? "right-of-layers" : "right-of-style",
-                  )
+                  setActiveRightPanelDock(isLayersSide ? "right-of-layers" : "right-of-style")
                 }
               >
                 <Columns2 className="h-4 w-4" />
@@ -278,9 +269,7 @@ export function PluginRightPanel({
                     : t("pluginPanel.mergeIntoStyleRail")
                 }
                 onClick={() =>
-                  setActiveRightPanelDock(
-                    isLayersSide ? "replace-layers" : "replace-style",
-                  )
+                  setActiveRightPanelDock(isLayersSide ? "replace-layers" : "replace-style")
                 }
               >
                 <Combine className="h-4 w-4" />
@@ -313,10 +302,7 @@ export function PluginRightPanel({
           </div>
         </div>
       )}
-      <div
-        ref={contentRef}
-        className={collapsed ? "hidden" : "min-h-0 flex-1 overflow-auto"}
-      />
+      <div ref={contentRef} className={collapsed ? "hidden" : "min-h-0 flex-1 overflow-auto"} />
     </aside>
   );
 }

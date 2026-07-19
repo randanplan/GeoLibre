@@ -7,6 +7,10 @@ import {
   type VectorStyleStop,
 } from "@geolibre/core";
 import { XMLParser } from "fast-xml-parser";
+import { OGC_SCALE_DENOMINATOR_AT_ZOOM_0 } from "./sld-export";
+
+const MIN_LAYER_ZOOM = DEFAULT_LAYER_STYLE.minZoom;
+const MAX_LAYER_ZOOM = DEFAULT_LAYER_STYLE.maxZoom;
 
 /** QGIS SimpleMarker `name` values that map back onto a GeoLibre marker shape. */
 const QGIS_NAME_TO_SHAPE: Record<string, MarkerShape> = {
@@ -491,9 +495,7 @@ function readLabeling(labeling: unknown, warnings: string[]): Partial<LabelStyle
     // GeoLibre's single label config cannot represent; flag it rather than
     // dropping the labels silently.
     if (type && type !== "simple") {
-      warnings.push(
-        `The "${type}" labeling has no GeoLibre equivalent; labels were not imported.`,
-      );
+      warnings.push(`The "${type}" labeling has no GeoLibre equivalent; labels were not imported.`);
     }
     return null;
   }
@@ -509,9 +511,7 @@ function readLabeling(labeling: unknown, warnings: string[]): Partial<LabelStyle
     labels.field = field;
     labels.expression = "";
   } else if (field && isExpression) {
-    warnings.push(
-      "The label is a QGIS expression; enable labels and pick a field in GeoLibre.",
-    );
+    warnings.push("The label is a QGIS expression; enable labels and pick a field in GeoLibre.");
   }
 
   const textStyle = toArray(settings["text-style"])[0];
@@ -562,9 +562,7 @@ export function parseQml(xml: string): QmlImportResult {
 
   const qgis = isNode(root) ? root.qgis : undefined;
   if (!isNode(qgis)) {
-    warnings.push(
-      "This file is not a QGIS QML style (no <qgis> root); nothing was imported.",
-    );
+    warnings.push("This file is not a QGIS QML style (no <qgis> root); nothing was imported.");
     return { style: patch, labels, warnings, matchedRuleCount: 0 };
   }
 
@@ -579,9 +577,7 @@ export function parseQml(xml: string): QmlImportResult {
   if (labels) matchedRuleCount += 1;
 
   if (matchedRuleCount === 0) {
-    warnings.push(
-      "No renderer or labeling was found; nothing was imported.",
-    );
+    warnings.push("No renderer or labeling was found; nothing was imported.");
   }
 
   return { style: patch, labels, warnings, matchedRuleCount };
@@ -646,9 +642,7 @@ function classifyCategorized(
 ): number {
   const property = attr(renderer, "attr");
   const categoriesRoot = toArray(renderer.categories)[0];
-  const categories = isNode(categoriesRoot)
-    ? toArray(categoriesRoot.category)
-    : [];
+  const categories = isNode(categoriesRoot) ? toArray(categoriesRoot.category) : [];
   if (!property || categories.length === 0) return 0;
 
   const stops: VectorStyleStop[] = [];
@@ -709,6 +703,55 @@ function classifyGraduated(
   return stops.length;
 }
 
+/** A rule zoom bound recovered from a QGIS scale denominator, or undefined
+ * when the denominator is unusable or lies outside the renderable zoom range. */
+function zoomFromDenominator(denominator: number | null, bound: "min" | "max"): number | undefined {
+  if (denominator === null || !(denominator > 0)) return undefined;
+  const zoom = Math.round(Math.log2(OGC_SCALE_DENOMINATOR_AT_ZOOM_0 / denominator) * 100) / 100;
+  // A bound at (or beyond) the zoom extremes is no constraint at all.
+  if (bound === "min") return zoom > MIN_LAYER_ZOOM ? zoom : undefined;
+  return zoom < MAX_LAYER_ZOOM ? zoom : undefined;
+}
+
+/** A per-rule numeric override: the rule symbol's value when it differs from
+ * the base (first) symbol's, else undefined so the rule inherits the layer. */
+function numberOverride(value: number | undefined, base: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (base !== undefined && Math.abs(value - base) < 1e-9) return undefined;
+  return value;
+}
+
+/**
+ * The per-rule symbol override fields where a rule's symbol differs from the
+ * base (first) symbol, whose flat values were applied to the layer. Also used
+ * for the ELSE rule so the catch-all keeps its own look when the first rule
+ * carries overrides.
+ */
+function symbolOverrides(
+  info: SymbolInfo | undefined,
+  base: SymbolInfo | undefined,
+): Partial<VectorRule> {
+  const strokeColor =
+    info?.strokeColor !== undefined && info.strokeColor !== base?.strokeColor
+      ? info.strokeColor
+      : undefined;
+  const strokeWidth = numberOverride(info?.strokeWidth, base?.strokeWidth);
+  const fillOpacity = numberOverride(info?.opacity, base?.opacity);
+  // A size difference only maps onto circleRadius for a plain circle mark: a
+  // shape marker (square/triangle/…) is sized by the layer's markerSize, which
+  // circleRadius does not affect (mirrors rulePaintFor in the exporter).
+  const markerSize =
+    info?.markerName && info.markerName !== "circle"
+      ? undefined
+      : numberOverride(info?.markerSize, base?.markerSize);
+  return {
+    ...(strokeColor !== undefined ? { strokeColor } : {}),
+    ...(strokeWidth !== undefined ? { strokeWidth } : {}),
+    ...(fillOpacity !== undefined ? { fillOpacity } : {}),
+    ...(markerSize !== undefined ? { circleRadius: markerSize / 2 } : {}),
+  };
+}
+
 function classifyRules(
   renderer: XmlNode,
   symbols: Map<string, SymbolInfo>,
@@ -720,38 +763,79 @@ function classifyRules(
   const rules = isNode(rulesRoot) ? toArray(rulesRoot.rule) : [];
   if (rules.length === 0) return 0;
 
+  // The first symbol's flat style was already applied to the layer, so a
+  // rule symbol property becomes a per-rule override only when it differs.
+  const base = symbols.values().next().value as SymbolInfo | undefined;
+
   const vectorRules: VectorRule[] = [];
   let elseColor: string | undefined;
   let elseLabel = "";
+  let elseInfo: SymbolInfo | undefined;
+  let elseDisabled = false;
+  let sawElse = false;
   let index = 0;
   let matched = 0;
-  for (const rule of rules) {
-    const filter = attr(rule, "filter");
-    const color = symbolColor(symbols, attr(rule, "symbol"));
-    const label = attr(rule, "label") ?? "";
-    if (filter === null || filter.trim() === "" || filter.trim().toUpperCase() === "ELSE") {
-      elseColor = color;
-      elseLabel = label;
+  const walk = (nodes: unknown[], parentId: string | undefined): void => {
+    for (const rule of nodes) {
+      const filter = attr(rule, "filter")?.trim() ?? "";
+      const symbolRef = attr(rule, "symbol");
+      const info = symbolRef !== null ? symbols.get(symbolRef) : undefined;
+      const color = info?.color;
+      const label = attr(rule, "label") ?? "";
+      const children = isNode(rule) ? toArray(rule.rule) : [];
+      const isGroup = children.length > 0;
+      const blankFilter = filter === "";
+      if (blankFilter || filter.toUpperCase() === "ELSE") {
+        // A blank or ELSE rule is the catch-all, but only at the top level and
+        // only when it has no children; a blank-filter group is a real group
+        // (its filter adds no constraint) and a nested ELSE has no GeoLibre
+        // equivalent.
+        if (!isGroup && parentId === undefined) {
+          elseColor = color;
+          elseLabel = label;
+          elseInfo = info;
+          elseDisabled = attr(rule, "checkstate") === "0";
+          sawElse = true;
+          matched += 1;
+          continue;
+        }
+        if (!isGroup || !blankFilter) {
+          warnings.push(
+            "A nested or grouped ELSE rule has no GeoLibre equivalent; it was skipped.",
+          );
+          continue;
+        }
+      }
+      let filterJson = "";
+      if (!blankFilter) {
+        const expression = qgisFilterToMapbox(filter);
+        if (expression === null) {
+          warnings.push("A rule used a QGIS expression that could not be read; it was skipped.");
+          continue;
+        }
+        filterJson = JSON.stringify(expression);
+      }
+      const id = `qml-rule-${index}`;
+      index += 1;
+      const minZoom = zoomFromDenominator(toNum(attr(rule, "scalemaxdenom")), "min");
+      const maxZoom = zoomFromDenominator(toNum(attr(rule, "scalemindenom")), "max");
+      vectorRules.push({
+        id,
+        label,
+        filter: filterJson,
+        color: color ?? DEFAULT_LAYER_STYLE.fillColor,
+        isElse: false,
+        ...(attr(rule, "checkstate") === "0" ? { enabled: false } : {}),
+        ...(minZoom !== undefined ? { minZoom } : {}),
+        ...(maxZoom !== undefined ? { maxZoom } : {}),
+        ...(parentId !== undefined ? { parentId } : {}),
+        ...symbolOverrides(info, base),
+      });
       matched += 1;
-      continue;
+      if (isGroup) walk(children, id);
     }
-    const expression = qgisFilterToMapbox(filter);
-    if (expression === null) {
-      warnings.push(
-        "A rule used a QGIS expression that could not be read; it was skipped.",
-      );
-      continue;
-    }
-    vectorRules.push({
-      id: `qml-rule-${index}`,
-      label,
-      filter: JSON.stringify(expression),
-      color: color ?? DEFAULT_LAYER_STYLE.fillColor,
-      isElse: false,
-    });
-    index += 1;
-    matched += 1;
-  }
+  };
+  walk(rules, undefined);
   if (vectorRules.length === 0) {
     // No rule translated, so a rule-based renderer cannot be built. The flat
     // style from the first symbol was already applied, so fall back to a single
@@ -766,6 +850,13 @@ function classifyRules(
     filter: "",
     color: fallback,
     isElse: true,
+    // In QGIS a rule tree without an ELSE rule (or with it unchecked) does not
+    // draw features matching no rule, so the imported else record is disabled
+    // in both cases — the renderer then hides unmatched features the same way.
+    ...(elseDisabled || !sawElse ? { enabled: false } : {}),
+    // The else symbol keeps its own look (as overrides) when it differs from
+    // the first symbol, whose flat values were applied to the layer.
+    ...symbolOverrides(elseInfo, base),
   });
   patch.vectorStyleMode = "rule-based";
   patch.vectorRules = vectorRules;
@@ -789,15 +880,10 @@ function literalValue(value: string): string | number {
  * Merge a parsed QML import over a base {@link LayerStyle}. Mirrors
  * {@link applySldImport}/{@link applyMapboxStyleImport}.
  */
-export function applyQmlImport(
-  base: LayerStyle,
-  result: QmlImportResult,
-): LayerStyle {
+export function applyQmlImport(base: LayerStyle, result: QmlImportResult): LayerStyle {
   return {
     ...base,
     ...result.style,
-    labels: result.labels
-      ? { ...base.labels, ...result.labels }
-      : base.labels,
+    labels: result.labels ? { ...base.labels, ...result.labels } : base.labels,
   };
 }

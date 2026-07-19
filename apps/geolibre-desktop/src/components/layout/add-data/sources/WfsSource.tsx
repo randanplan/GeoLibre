@@ -2,23 +2,17 @@ import { Button, Input, Label, Select } from "@geolibre/ui";
 import { ListTree, Loader2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  createWfsGetFeatureUrl,
-  fetchGeoJsonFeatureCollection,
-} from "../../../../lib/layer-refresh";
+import { fetchWfsGeoJson } from "../../../../lib/layer-refresh";
+import { buildWfsGeoJsonLayer } from "../apply-service";
 import { DEFAULT_WFS_ENDPOINT, DEFAULT_WFS_TYPE_NAME } from "../constants";
 import {
-  createBaseLayer,
-  errorMessage,
   fetchWfsFeatureTypes,
+  serviceRequestErrorMessage,
   stripOgcOperationParams,
   type WfsFeatureTypeOption,
 } from "../helpers";
 import { ServiceLibrarySection } from "../ServiceLibrarySection";
-import {
-  serviceFieldString,
-  type ServiceFields,
-} from "../service-library";
+import { serviceFieldString, type ServiceFields } from "../service-library";
 import { AddDataSourceForm, SampleDataSelect, useAddDataSource } from "../shared";
 
 /**
@@ -46,12 +40,8 @@ export function WfsSource() {
   const [wfsOutputFormat, setWfsOutputFormat] = useState(
     wfsFormCache?.outputFormat ?? "application/json",
   );
-  const [wfsSrsName, setWfsSrsName] = useState(
-    wfsFormCache?.srsName ?? "EPSG:4326",
-  );
-  const [wfsMaxFeatures, setWfsMaxFeatures] = useState(
-    wfsFormCache?.maxFeatures ?? "1000",
-  );
+  const [wfsSrsName, setWfsSrsName] = useState(wfsFormCache?.srsName ?? "EPSG:4326");
+  const [wfsMaxFeatures, setWfsMaxFeatures] = useState(wfsFormCache?.maxFeatures ?? "1000");
   const [typeOptions, setTypeOptions] = useState<WfsFeatureTypeOption[]>(
     wfsFormCache?.options ?? [],
   );
@@ -109,8 +99,7 @@ export function WfsSource() {
     const controller = new AbortController();
     retrieveAbortRef.current = controller;
     const token = ++retrieveTokenRef.current;
-    const isStale = () =>
-      token !== retrieveTokenRef.current || controller.signal.aborted;
+    const isStale = () => token !== retrieveTokenRef.current || controller.signal.aborted;
     setIsRetrieving(true);
     setRetrieveError(null);
     try {
@@ -131,7 +120,7 @@ export function WfsSource() {
     } catch (error) {
       if (isStale()) return;
       setTypeOptions([]);
-      setRetrieveError(errorMessage(error, t("addData.wfs.retrieveError")));
+      setRetrieveError(serviceRequestErrorMessage(error, t, t("addData.wfs.retrieveError")));
     } finally {
       if (token === retrieveTokenRef.current) setIsRetrieving(false);
     }
@@ -150,9 +139,7 @@ export function WfsSource() {
     setWfsEndpoint(serviceFieldString(fields, "endpoint"));
     setWfsTypeName(serviceFieldString(fields, "typeName"));
     setWfsVersion(serviceFieldString(fields, "version", "2.0.0"));
-    setWfsOutputFormat(
-      serviceFieldString(fields, "outputFormat", "application/json"),
-    );
+    setWfsOutputFormat(serviceFieldString(fields, "outputFormat", "application/json"));
     setWfsSrsName(serviceFieldString(fields, "srsName", "EPSG:4326"));
     setWfsMaxFeatures(serviceFieldString(fields, "maxFeatures", "1000"));
     // The new endpoint's feature types must be re-retrieved, so drop the list
@@ -178,41 +165,53 @@ export function WfsSource() {
     // Strip any leftover operation params (a pasted GetCapabilities URL) so the
     // GetFeature request is not built with a conflicting duplicate REQUEST,
     // which would make the server return capabilities XML instead of features.
-    const featureUrl = createWfsGetFeatureUrl({
-      endpoint: stripOgcOperationParams(wfsEndpoint.trim(), "WFS"),
-      typeName: wfsTypeName.trim(),
-      version: wfsVersion,
-      outputFormat: wfsOutputFormat.trim(),
-      srsName: wfsSrsName.trim(),
-      maxFeatures: wfsMaxFeatures.trim() || undefined,
-    });
-    const data = await fetchGeoJsonFeatureCollection(featureUrl, {
-      useWfsProxy: true,
-    });
-    source.addAndClose(
+    // fetchWfsGeoJson retries alternate GeoJSON output formats when the server
+    // answers the requested one with XML (e.g. an ArcGIS WFS that advertises
+    // GeoJSON as "GEOJSON" rather than "application/json"), so it returns the
+    // URL and output format that actually worked.
+    const {
+      data,
+      url: featureUrl,
+      outputFormat: resolvedOutputFormat,
+    } = await fetchWfsGeoJson(
       {
-        ...createBaseLayer(
-          name,
-          "geojson",
-          {
-            type: "geojson",
-            url: featureUrl,
-            service: "wfs",
-            typeName: wfsTypeName.trim(),
-            version: wfsVersion,
-            outputFormat: wfsOutputFormat.trim(),
-            srsName: wfsSrsName.trim() || undefined,
-          },
-          {
-            featureCount: data.features.length,
-            service: "wfs",
-            sourceKind: "wfs-getfeature",
-            typeName: wfsTypeName.trim(),
-          },
-        ),
-        geojson: data,
-        sourcePath: featureUrl,
+        endpoint: stripOgcOperationParams(wfsEndpoint.trim(), "WFS"),
+        typeName: wfsTypeName.trim(),
+        version: wfsVersion,
+        outputFormat: wfsOutputFormat.trim(),
+        srsName: wfsSrsName.trim(),
+        maxFeatures: wfsMaxFeatures.trim() || undefined,
       },
+      { useWfsProxy: true },
+    );
+    // The fallback may have loaded the layer under a different output format
+    // than the user entered (e.g. "GEOJSON" instead of "application/json"). The
+    // resolved value is what gets persisted to source.outputFormat, so note the
+    // substitution (in case a user later inspects the saved project and finds a
+    // format they did not type) and adopt it as the form's output format. That
+    // updates wfsFormCache too, so adding another feature type from the same
+    // service this session skips straight to the working token instead of
+    // re-paying the retry cost.
+    const requestedOutputFormat = wfsOutputFormat.trim();
+    if (
+      requestedOutputFormat &&
+      resolvedOutputFormat.toLowerCase() !== requestedOutputFormat.toLowerCase()
+    ) {
+      console.info(
+        `WFS: "${requestedOutputFormat}" returned XML; loaded the layer with "${resolvedOutputFormat}" instead.`,
+      );
+      setWfsOutputFormat(resolvedOutputFormat);
+    }
+    source.addAndClose(
+      buildWfsGeoJsonLayer({
+        name,
+        featureUrl,
+        data,
+        typeName: wfsTypeName.trim(),
+        version: wfsVersion,
+        outputFormat: resolvedOutputFormat,
+        srsName: wfsSrsName.trim(),
+      }),
       { fit: true },
     );
   });
@@ -266,23 +265,17 @@ export function WfsSource() {
               className="shrink-0"
             >
               {isRetrieving ? (
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="me-2 h-3.5 w-3.5 animate-spin" />
               ) : (
-                <ListTree className="mr-2 h-3.5 w-3.5" />
+                <ListTree className="me-2 h-3.5 w-3.5" />
               )}
-              {isRetrieving
-                ? t("addData.wfs.retrieving")
-                : t("addData.wfs.retrieveTypes")}
+              {isRetrieving ? t("addData.wfs.retrieving") : t("addData.wfs.retrieveTypes")}
             </Button>
           </div>
-          {retrieveError ? (
-            <p className="text-xs text-destructive">{retrieveError}</p>
-          ) : null}
+          {retrieveError ? <p className="text-xs text-destructive">{retrieveError}</p> : null}
           {typeOptions.length > 0 ? (
             <div className="space-y-1.5">
-              <Label htmlFor={typeListId}>
-                {t("addData.wfs.retrievedTypes")}
-              </Label>
+              <Label htmlFor={typeListId}>{t("addData.wfs.retrievedTypes")}</Label>
               {/* Picker listing every retrieved feature type; fills the field
                   below on select. Value stays empty (action menu), so it always
                   shows the full list and can never mismatch the free-text field. */}
@@ -343,9 +336,7 @@ export function WfsSource() {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="wfs-output-format">
-              {t("addData.wfs.outputFormat")}
-            </Label>
+            <Label htmlFor="wfs-output-format">{t("addData.wfs.outputFormat")}</Label>
             <Input
               id="wfs-output-format"
               value={wfsOutputFormat}
@@ -362,9 +353,7 @@ export function WfsSource() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="wfs-max-features">
-              {t("addData.wfs.maxFeatures")}
-            </Label>
+            <Label htmlFor="wfs-max-features">{t("addData.wfs.maxFeatures")}</Label>
             <Input
               id="wfs-max-features"
               inputMode="numeric"

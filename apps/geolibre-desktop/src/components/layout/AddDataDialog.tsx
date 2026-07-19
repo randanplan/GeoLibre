@@ -1,12 +1,6 @@
 import { useAppStore } from "@geolibre/core";
 import type { MapController } from "@geolibre/map";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@geolibre/ui";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@geolibre/ui";
 import { Database } from "lucide-react";
 import { useCallback, useMemo, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +10,7 @@ import { ArcGISSource } from "./add-data/sources/ArcGISSource";
 import { CadSource } from "./add-data/sources/CadSource";
 import { DeckVizSource } from "./add-data/sources/DeckVizSource";
 import { DelimitedTextSource } from "./add-data/sources/DelimitedTextSource";
+import { GdbSource } from "./add-data/sources/GdbSource";
 import { GeoRssSource } from "./add-data/sources/GeoRssSource";
 import { GpxSource } from "./add-data/sources/GpxSource";
 import { MbtilesSource } from "./add-data/sources/MbtilesSource";
@@ -28,6 +23,7 @@ import { WmsSource } from "./add-data/sources/WmsSource";
 import { WmtsSource } from "./add-data/sources/WmtsSource";
 import { XyzSource } from "./add-data/sources/XyzSource";
 import type { AddDataKind } from "./add-data/types";
+import type { OpenAddDataPostgres } from "./add-data/open-add-data";
 import { useMartinConnection } from "./add-data/useMartinConnection";
 
 export type { AddDataKind } from "./add-data/types";
@@ -41,6 +37,12 @@ interface AddDataDialogProps {
    * (e.g. a "3D model" menu entry opens it on the scenegraph layer type).
    */
   initialDeckVizKind?: string;
+  /**
+   * Connection (and optional table) to pre-select when the dialog opens as
+   * `postgres` — set when the Browser panel opens a saved connection or a
+   * clicked PostGIS table.
+   */
+  initialPostgres?: OpenAddDataPostgres;
 }
 
 /**
@@ -51,6 +53,7 @@ interface AddDataDialogProps {
 function renderSource(
   kind: AddDataKind,
   initialDeckVizKind: string | undefined,
+  initialPostgres: OpenAddDataPostgres | undefined,
 ) {
   switch (kind) {
     case "xyz":
@@ -71,6 +74,8 @@ function renderSource(
       return <DelimitedTextSource />;
     case "cad":
       return <CadSource />;
+    case "gdb":
+      return <GdbSource />;
     case "photos":
       return <PhotosSource />;
     case "mbtiles":
@@ -78,7 +83,7 @@ function renderSource(
     case "arcgis":
       return <ArcGISSource />;
     case "postgres":
-      return <PostgresSource />;
+      return <PostgresSource initialPostgres={initialPostgres} />;
     case "video":
       return <VideoSource />;
     case "deckgl-viz":
@@ -98,6 +103,7 @@ export function AddDataDialog({
   mapControllerRef,
   onOpenChange,
   initialDeckVizKind,
+  initialPostgres,
 }: AddDataDialogProps) {
   const { t } = useTranslation();
   const open = kind !== null;
@@ -106,12 +112,8 @@ export function AddDataDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const martin = useMartinConnection();
 
-  const title = kind
-    ? t(`addData.kind.${KIND_I18N_KEY[kind]}.label`)
-    : t("addData.title");
-  const description = kind
-    ? t(`addData.kind.${KIND_I18N_KEY[kind]}.description`)
-    : "";
+  const title = kind ? t(`addData.kind.${KIND_I18N_KEY[kind]}.label`) : t("addData.title");
+  const description = kind ? t(`addData.kind.${KIND_I18N_KEY[kind]}.description`) : "";
 
   const closeDialog = useCallback(() => {
     martin.stopTransient();
@@ -153,7 +155,7 @@ export function AddDataDialog({
 
         {kind ? (
           <AddDataShellProvider value={contextValue}>
-            {renderSource(kind, initialDeckVizKind)}
+            {renderSource(kind, initialDeckVizKind, initialPostgres)}
           </AddDataShellProvider>
         ) : null}
       </DialogContent>

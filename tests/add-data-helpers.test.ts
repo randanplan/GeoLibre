@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { FeatureCollection } from "geojson";
 import {
+  EOX_S2CLOUDLESS_ATTRIBUTION,
+  GEBCO_ATTRIBUTION,
+} from "../apps/geolibre-desktop/src/components/layout/add-data/constants";
+import {
   appendQuery,
+  attributionForTileUrl,
   createWfsGetCapabilitiesUrl,
   createWmsGetCapabilitiesUrl,
   createWmsTileUrl,
@@ -12,12 +17,19 @@ import {
   wmsVersionFromEndpoint,
   geoJsonToPointRows,
   layerNameFromPath,
+  normalizeCrs,
   parseOptionalNumber,
   parseRequiredNumber,
   parseVideoCorner,
   resolveDelimitedTextDelimiter,
   savedPostgresConnectionLabel,
+  serviceRequestErrorMessage,
 } from "../apps/geolibre-desktop/src/components/layout/add-data/helpers";
+import type { TFunction } from "i18next";
+
+// A minimal `t` stub: returns the key so the branch taken is observable, and
+// echoes the fallback for the default branch.
+const fakeT = ((key: string) => key) as unknown as TFunction;
 
 describe("add-data path helpers", () => {
   it("extracts the file name from POSIX and Windows paths", () => {
@@ -42,10 +54,7 @@ describe("appendQuery", () => {
       appendQuery("https://x.test/wms?foo=1", [["BAR", "2"]]),
       "https://x.test/wms?foo=1&BAR=2",
     );
-    assert.equal(
-      appendQuery("https://x.test/wms?", [["BAR", "2"]]),
-      "https://x.test/wms?BAR=2",
-    );
+    assert.equal(appendQuery("https://x.test/wms?", [["BAR", "2"]]), "https://x.test/wms?BAR=2");
   });
 
   it("leaves the bbox placeholder unescaped", () => {
@@ -136,14 +145,8 @@ describe("normalizeWmsVersion", () => {
 
 describe("wmsVersionFromEndpoint", () => {
   it("reads the VERSION parameter from a pasted service URL", () => {
-    assert.equal(
-      wmsVersionFromEndpoint("https://data.geopf.fr/wms-r?VERSION=1.3.0"),
-      "1.3.0",
-    );
-    assert.equal(
-      wmsVersionFromEndpoint("https://x.test/wms?version=1.1.1&foo=1"),
-      "1.1.1",
-    );
+    assert.equal(wmsVersionFromEndpoint("https://data.geopf.fr/wms-r?VERSION=1.3.0"), "1.3.0");
+    assert.equal(wmsVersionFromEndpoint("https://x.test/wms?version=1.1.1&foo=1"), "1.1.1");
     assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=1.0.0"), "1.1.1");
     // Any 1.x value is bucketed the same way normalizeWmsVersion buckets it.
     assert.equal(wmsVersionFromEndpoint("https://x.test/wms?VERSION=1.2.0"), "1.1.1");
@@ -200,9 +203,7 @@ describe("createWmsGetCapabilitiesUrl", () => {
   });
 
   it("strips stale operation params on a relative endpoint too", () => {
-    const url = createWmsGetCapabilitiesUrl(
-      "/geoserver/wms?REQUEST=GetMap&LAYERS=a&token=abc",
-    );
+    const url = createWmsGetCapabilitiesUrl("/geoserver/wms?REQUEST=GetMap&LAYERS=a&token=abc");
     // Relative form is preserved (no scheme/host injected).
     assert.ok(url.startsWith("/geoserver/wms?"));
     const params = new URLSearchParams(url.slice(url.indexOf("?")));
@@ -214,9 +215,7 @@ describe("createWmsGetCapabilitiesUrl", () => {
 
 describe("createWfsGetCapabilitiesUrl", () => {
   it("appends SERVICE, REQUEST, and the version when given", () => {
-    const url = new URL(
-      createWfsGetCapabilitiesUrl("https://x.test/wfs", "2.0.0"),
-    );
+    const url = new URL(createWfsGetCapabilitiesUrl("https://x.test/wfs", "2.0.0"));
     assert.equal(url.searchParams.get("SERVICE"), "WFS");
     assert.equal(url.searchParams.get("REQUEST"), "GetCapabilities");
     assert.equal(url.searchParams.get("VERSION"), "2.0.0");
@@ -252,10 +251,7 @@ describe("stripOgcOperationParams", () => {
 
   it("keeps non-operation params like an auth token", () => {
     assert.equal(
-      stripOgcOperationParams(
-        "https://x.test/wms?REQUEST=GetMap&LAYERS=a&token=abc",
-        "WMS",
-      ),
+      stripOgcOperationParams("https://x.test/wms?REQUEST=GetMap&LAYERS=a&token=abc", "WMS"),
       "https://x.test/wms?token=abc",
     );
   });
@@ -283,9 +279,7 @@ describe("number parsing helpers", () => {
 
 describe("parseVideoCorner", () => {
   it("parses a longitude, latitude pair", () => {
-    assert.deepEqual(parseVideoCorner("-122.5, 37.5", "top-left"), [
-      -122.5, 37.5,
-    ]);
+    assert.deepEqual(parseVideoCorner("-122.5, 37.5", "top-left"), [-122.5, 37.5]);
   });
 
   it("rejects malformed or out-of-range corners", () => {
@@ -300,6 +294,29 @@ describe("resolveDelimitedTextDelimiter", () => {
     assert.equal(resolveDelimitedTextDelimiter("comma", ""), ",");
     assert.equal(resolveDelimitedTextDelimiter("tab", ""), "\t");
     assert.equal(resolveDelimitedTextDelimiter("custom", "~"), "~");
+  });
+});
+
+describe("normalizeCrs", () => {
+  it("qualifies a bare code and upper-cases an authority string", () => {
+    assert.equal(normalizeCrs("32643"), "EPSG:32643");
+    assert.equal(normalizeCrs("epsg:4326"), "EPSG:4326");
+    assert.equal(normalizeCrs("esri:102100"), "ESRI:102100");
+  });
+
+  it("returns blank for an empty or whitespace-only value", () => {
+    assert.equal(normalizeCrs(""), "");
+    assert.equal(normalizeCrs("   "), "");
+  });
+
+  it("strips internal whitespace so a pasted `EPSG: 32643` is valid for PROJ", () => {
+    assert.equal(normalizeCrs("EPSG: 32643"), "EPSG:32643");
+    assert.equal(normalizeCrs("  epsg : 4326 "), "EPSG:4326");
+  });
+
+  it("passes a WKT definition through untouched (apart from edge trimming)", () => {
+    const wkt = '  GEOGCS["WGS 84",DATUM["WGS_1984"]]  ';
+    assert.equal(normalizeCrs(wkt), 'GEOGCS["WGS 84",DATUM["WGS_1984"]]');
   });
 });
 
@@ -327,9 +344,7 @@ describe("savedPostgresConnectionLabel", () => {
 
   it("masks every password occurrence, not just the first", () => {
     assert.equal(
-      savedPostgresConnectionLabel(
-        "host=a password=one application_name=x password=two",
-      ),
+      savedPostgresConnectionLabel("host=a password=one application_name=x password=two"),
       "host=a password=**** application_name=x password=****",
     );
   });
@@ -400,8 +415,99 @@ describe("geoJsonToPointRows", () => {
         },
       ],
     };
-    assert.deepEqual(geoJsonToPointRows(fc), [
-      { name: "Z", lng: -122, lat: 37 },
-    ]);
+    assert.deepEqual(geoJsonToPointRows(fc), [{ name: "Z", lng: -122, lat: 37 }]);
+  });
+});
+
+describe("attributionForTileUrl", () => {
+  it("credits EOX Sentinel-2 cloudless tiles, including subdomain variants", () => {
+    assert.equal(
+      attributionForTileUrl(
+        "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg",
+      ),
+      EOX_S2CLOUDLESS_ATTRIBUTION,
+    );
+    assert.equal(
+      attributionForTileUrl(
+        "https://s2maps-tiles.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg",
+      ),
+      EOX_S2CLOUDLESS_ATTRIBUTION,
+    );
+  });
+
+  it("credits GEBCO bathymetry on the WMS host and its subdomains", () => {
+    // The GetMap template built from the sample endpoint carries the host.
+    assert.equal(
+      attributionForTileUrl(
+        "https://wms.gebco.net/mapserv?SERVICE=WMS&REQUEST=GetMap&LAYERS=GEBCO_LATEST&BBOX={bbox-epsg-3857}",
+      ),
+      GEBCO_ATTRIBUTION,
+    );
+    // Bare-domain case also matches the `.gebco.net` suffix rule.
+    assert.equal(
+      attributionForTileUrl("https://gebco.net/mapserv?LAYERS=GEBCO_LATEST"),
+      GEBCO_ATTRIBUTION,
+    );
+  });
+
+  it("returns undefined for other hosts, lookalikes, and malformed URLs", () => {
+    assert.equal(
+      attributionForTileUrl("https://tile.openstreetmap.org/{z}/{x}/{y}.png"),
+      undefined,
+    );
+    // A non-s2cloudless EOX layer has no known CC BY credit to attach.
+    assert.equal(
+      attributionForTileUrl("https://tiles.maps.eox.at/wmts/1.0.0/terrain/{z}/{y}/{x}.jpg"),
+      undefined,
+    );
+    // Lookalike host must not match the `.eox.at` suffix check.
+    assert.equal(
+      attributionForTileUrl("https://evil-eox.at/s2cloudless/{z}/{y}/{x}.jpg"),
+      undefined,
+    );
+    // Lookalike host must not match the `.gebco.net` suffix check.
+    assert.equal(
+      attributionForTileUrl("https://evil-gebco.net/mapserv?LAYERS=GEBCO_LATEST"),
+      undefined,
+    );
+    assert.equal(attributionForTileUrl("not a url"), undefined);
+  });
+});
+
+describe("serviceRequestErrorMessage", () => {
+  it("maps a network/TLS/CORS failure to the localized network message", () => {
+    assert.equal(
+      serviceRequestErrorMessage(new TypeError("Failed to fetch"), fakeT, "fallback"),
+      "addData.common.networkFailure",
+    );
+  });
+
+  it("maps a native TLS error string to the localized network message", () => {
+    assert.equal(
+      serviceRequestErrorMessage("Request failed: invalid peer certificate", fakeT, "fallback"),
+      "addData.common.networkFailure",
+    );
+  });
+
+  it("maps a timeout to the localized timeout message", () => {
+    assert.equal(
+      serviceRequestErrorMessage(new Error("The request timed out."), fakeT, "fallback"),
+      "addData.common.requestTimedOut",
+    );
+  });
+
+  it("falls through to the error's own message for an unclassified failure", () => {
+    assert.equal(
+      serviceRequestErrorMessage(
+        new Error("The WFS service returned an error."),
+        fakeT,
+        "fallback",
+      ),
+      "The WFS service returned an error.",
+    );
+  });
+
+  it("uses the fallback when an unclassified error carries no message", () => {
+    assert.equal(serviceRequestErrorMessage({}, fakeT, "fallback"), "fallback");
   });
 });

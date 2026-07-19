@@ -9,11 +9,7 @@
 // tiled COG with overviews, and hands the bytes back so the caller can load the
 // result instead. It runs entirely client-side, so it works in the browser
 // build with no Python sidecar. See opengeos/GeoLibre#789.
-import init, {
-  CogBuilder,
-  GeoTiffReader,
-  geotiff_info,
-} from "geolibre-wasm";
+import init, { CogBuilder, GeoTiffReader, geotiff_info } from "geolibre-wasm";
 
 /** Header-only metadata for a GeoTIFF, parsed from {@link geotiff_info}. Cheap:
  * reads only the TIFF header, never the pixel data, so it is safe on large
@@ -38,6 +34,25 @@ export interface GeoTiffInfo {
  * data ships with and the upstream reader's expectations. */
 const COG_TILE_SIZE = 512;
 
+/**
+ * Compressions {@link CogBuilder} can encode for *any* pixel type, and so the
+ * set the browser build offers for Raster to COG.
+ *
+ * Deliberately narrower than the sidecar's rio-cogeo list: `zstd` and `raw` are
+ * not implemented by CogBuilder at all, and `webp`/`jpeg`/`jpegxl` reject
+ * anything but 8-bit samples ("Unsupported sample format"), which would fail on
+ * the Int16/Float32 DEMs this tool is most often pointed at. Desktop keeps the
+ * full rio-cogeo list via the sidecar.
+ */
+export const COG_WASM_COMPRESSIONS = ["deflate", "lzw", "packbits", "none"] as const;
+
+export type CogWasmCompression = (typeof COG_WASM_COMPRESSIONS)[number];
+
+export interface ConvertGeoTiffToCogOptions {
+  /** Tile compression codec. Defaults to `"deflate"`. */
+  compression?: CogWasmCompression;
+}
+
 let wasmReady: Promise<void> | null = null;
 
 /**
@@ -48,9 +63,7 @@ let wasmReady: Promise<void> | null = null;
  * @param moduleOrPath - Optional wasm bytes / URL / module for non-browser hosts.
  * @returns A promise that resolves once the module is ready.
  */
-export function initCogWasm(
-  moduleOrPath?: ArrayBuffer | Uint8Array | URL | string,
-): Promise<void> {
+export function initCogWasm(moduleOrPath?: ArrayBuffer | Uint8Array | URL | string): Promise<void> {
   if (!wasmReady) {
     wasmReady = init(
       moduleOrPath === undefined ? undefined : { module_or_path: moduleOrPath },
@@ -115,10 +128,12 @@ function overviewLevels(width: number, height: number): Uint32Array {
  * file small. Multi-band data is encoded pixel-interleaved, matching the reader.
  *
  * @param bytes - The raw source GeoTIFF bytes.
+ * @param options - Optional encoder settings; see {@link ConvertGeoTiffToCogOptions}.
  * @returns The COG file bytes.
  */
 export async function convertGeoTiffToCog(
   bytes: Uint8Array,
+  options: ConvertGeoTiffToCogOptions = {},
 ): Promise<Uint8Array> {
   await initCogWasm();
   const reader = new GeoTiffReader(bytes);
@@ -139,7 +154,7 @@ export async function convertGeoTiffToCog(
         builder.set_nodata(nodata);
       }
       builder.set_tile_size(COG_TILE_SIZE);
-      builder.set_compression("deflate");
+      builder.set_compression(options.compression ?? "deflate");
       builder.set_overview_levels(overviewLevels(width, height));
 
       // read_all_f64 is the one reader that decodes any source dtype (Int16,

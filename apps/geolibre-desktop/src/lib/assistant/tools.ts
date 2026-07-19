@@ -12,17 +12,9 @@ import type { FeatureCollection } from "geojson";
 import { z } from "zod";
 import { inferPropertyColumns } from "../pglite-sql";
 import { consoleDeps, runConsoleCode } from "../pyodide/pyodide-console";
-import {
-  cleanStatement,
-  maskSqlLiterals,
-  previewLayerTables,
-  runSqlQuery,
-} from "../sql-workspace";
+import { cleanStatement, maskSqlLiterals, previewLayerTables, runSqlQuery } from "../sql-workspace";
 import { createXyzTileUrlTemplate } from "../xyz-url";
-import {
-  findNamedTileBasemap,
-  NAMED_TILE_BASEMAPS,
-} from "./basemaps";
+import { findNamedTileBasemap, NAMED_TILE_BASEMAPS } from "./basemaps";
 import { buildSymbologyStyle } from "./symbology";
 import { webSearch } from "./web-search";
 
@@ -30,6 +22,19 @@ import { webSearch } from "./web-search";
 export interface AssistantToolDeps {
   /** Returns the live map controller, or null before the map mounts. */
   getMapController: () => MapController | null;
+  /**
+   * Ask the user to approve executing model-generated code before it runs.
+   * Resolves true to proceed, false to decline. The assistant can be steered by
+   * untrusted content (e.g. `web_search` results, layer attributes) into
+   * emitting a `run_python`/`run_maplibre_js` snippet that exfiltrates secrets
+   * or mutates the app, so these two tools are gated behind an explicit user
+   * confirmation. When omitted (e.g. in tests) code runs without a prompt; the
+   * desktop UI always provides it.
+   */
+  confirmCodeExecution?: (request: {
+    tool: "run_python" | "run_maplibre_js";
+    code: string;
+  }) => Promise<boolean>;
 }
 
 /** A short, model-facing description of one layer (no feature data leaked). */
@@ -100,10 +105,7 @@ function assertPublicHttpUrl(raw: string): void {
  * over-large (or Content-Length–less) response can't buffer unbounded into
  * memory before the size check.
  */
-async function readTextCapped(
-  response: Response,
-  maxBytes: number,
-): Promise<string> {
+async function readTextCapped(response: Response, maxBytes: number): Promise<string> {
   if (!response.body) {
     const text = await response.text();
     if (text.length > maxBytes) throw new Error("Response too large.");
@@ -124,9 +126,7 @@ async function readTextCapped(
       chunks.push(value);
     }
   }
-  return new TextDecoder().decode(
-    chunks.length === 1 ? chunks[0] : concatBytes(chunks, total),
-  );
+  return new TextDecoder().decode(chunks.length === 1 ? chunks[0] : concatBytes(chunks, total));
 }
 
 /** Concatenate byte chunks into one buffer. */
@@ -177,9 +177,7 @@ export function describeLayers(layers: GeoLibreLayer[]): string {
     .map((layer, index) => {
       const summary = summarizeLayer(layer);
       const table = tables[index]?.tableName;
-      const fields = summary.fields
-        .map((field) => `${field.name}:${field.type}`)
-        .join(", ");
+      const fields = summary.fields.map((field) => `${field.name}:${field.type}`).join(", ");
       return [
         `- "${layer.name}" (${summary.type}`,
         summary.geometryType ? `, ${summary.geometryType}` : "",
@@ -203,9 +201,7 @@ function resolveLayer(reference: string): GeoLibreLayer | null {
   // Only fall back to a substring match for references long enough to be
   // meaningful, so a 1–2 char string can't match an arbitrary layer.
   if (target.length < 3) return null;
-  return (
-    layers.find((layer) => layer.name.toLowerCase().includes(target)) ?? null
-  );
+  return layers.find((layer) => layer.name.toLowerCase().includes(target)) ?? null;
 }
 
 /** Resolve a basemap name/id/url to a style URL via the known presets. */
@@ -217,9 +213,7 @@ function resolveBasemap(reference: string): string | null {
     return target.startsWith("https://") ? reference.trim() : null;
   }
   const preset = OPENFREEMAP_BASEMAPS.find(
-    (basemap) =>
-      basemap.id.toLowerCase() === target ||
-      basemap.name.toLowerCase() === target,
+    (basemap) => basemap.id.toLowerCase() === target || basemap.name.toLowerCase() === target,
   );
   return preset?.styleUrl ?? null;
 }
@@ -245,9 +239,7 @@ function asFeatureCollection(data: unknown): FeatureCollection {
  * @param deps Map-controller accessor for camera tools.
  * @returns The tools to register on the agent.
  */
-export function createAssistantTools(
-  deps: AssistantToolDeps,
-): InvokableTool<unknown, unknown>[] {
+export function createAssistantTools(deps: AssistantToolDeps): InvokableTool<unknown, unknown>[] {
   const store = () => useAppStore.getState();
   // Tool results are serialized to the model; the data we return is JSON-safe by
   // construction, so this asserts the shape against Strands' strict JSONValue.
@@ -255,6 +247,18 @@ export function createAssistantTools(
   // Shared Pyodide scripting context for run_python (exposes the `geolibre`
   // facade that drives the live map).
   const pyDeps = consoleDeps(deps.getMapController);
+
+  /**
+   * Gate model-authored code behind the user's confirmation hook. Returns true
+   * when execution may proceed (approved, or no hook configured).
+   */
+  const approveCodeExecution = (
+    toolName: "run_python" | "run_maplibre_js",
+    code: string,
+  ): Promise<boolean> =>
+    deps.confirmCodeExecution
+      ? deps.confirmCodeExecution({ tool: toolName, code })
+      : Promise.resolve(true);
 
   /** The current map viewport as [west, south, east, north], or null. */
   const viewBbox = (): [number, number, number, number] | null => {
@@ -339,8 +343,7 @@ export function createAssistantTools(
 
   const addLayerFromUrl = tool({
     name: "add_layer_from_url",
-    description:
-      "Fetch a public GeoJSON URL and add it to the map as a new vector layer.",
+    description: "Fetch a public GeoJSON URL and add it to the map as a new vector layer.",
     inputSchema: z.object({
       url: z.string().describe("A public URL returning GeoJSON."),
       name: z.string().optional().describe("Optional layer name."),
@@ -353,9 +356,7 @@ export function createAssistantTools(
       try {
         const response = await fetch(input.url, { signal: controller.signal });
         if (!response.ok) {
-          throw new Error(
-            `Fetch failed: ${response.status} ${response.statusText}`,
-          );
+          throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
         }
         // Check the advertised length first (cheap), then stream the body with
         // a hard byte cap — Content-Length is optional and bypassable.
@@ -363,13 +364,9 @@ export function createAssistantTools(
         if (length && Number(length) > MAX_BYTES) {
           throw new Error(`Response too large (${length} bytes).`);
         }
-        const geojson = asFeatureCollection(
-          JSON.parse(await readTextCapped(response, MAX_BYTES)),
-        );
+        const geojson = asFeatureCollection(JSON.parse(await readTextCapped(response, MAX_BYTES)));
         const name =
-          input.name?.trim() ||
-          input.url.split("/").pop()?.split("?")[0] ||
-          "Remote layer";
+          input.name?.trim() || input.url.split("/").pop()?.split("?")[0] || "Remote layer";
         const id = store().addGeoJsonLayer(name, geojson, input.url);
         return json({
           addedLayerId: id,
@@ -433,7 +430,9 @@ export function createAssistantTools(
       basemap: z
         .string()
         .optional()
-        .describe("Known basemap name, e.g. 'esri imagery', 'opentopomap', 'osm'."),
+        .describe(
+          `Known basemap name, one of: ${NAMED_TILE_BASEMAPS.map((basemap) => basemap.id).join(", ")}.`,
+        ),
       url: z
         .string()
         .optional()
@@ -458,9 +457,7 @@ export function createAssistantTools(
         }
       }
       if (!url) {
-        throw new Error(
-          "Provide a known basemap name or an XYZ url template with {z}/{x}/{y}.",
-        );
+        throw new Error("Provide a known basemap name or an XYZ url template with {z}/{x}/{y}.");
       }
       const tileUrl = createXyzTileUrlTemplate(url);
       const layer: GeoLibreLayer = {
@@ -573,6 +570,12 @@ export function createAssistantTools(
       code: z.string().describe("Python source to execute."),
     }),
     callback: async (input) => {
+      if (!(await approveCodeExecution("run_python", input.code))) {
+        return json({
+          output: "",
+          error: "The user declined to run this Python code.",
+        });
+      }
       const result = await runConsoleCode(pyDeps, input.code);
       // Cap stdout so a snippet printing megabytes can't blow the model's
       // context window on the next turn.
@@ -590,13 +593,12 @@ export function createAssistantTools(
     description:
       "Fallback for tasks with no dedicated tool (e.g. globe projection, terrain, sky, custom paint/layout properties, controls, markers). Runs a small JavaScript snippet against the live map. The snippet is a function body with `map` (the MapLibre GL JS map) and `maplibregl` (the MapLibre GL JS module, e.g. `maplibregl.TerrainControl`, `maplibregl.Marker`) in scope, and may `return` a JSON-serializable value. Example — switch to globe: `map.setProjection({ type: 'globe' })`. Prefer dedicated tools when one exists; changes made here bypass the store and are NOT undoable.",
     inputSchema: z.object({
-      code: z
-        .string()
-        .describe(
-          "JavaScript function body; `map` and `maplibregl` are in scope.",
-        ),
+      code: z.string().describe("JavaScript function body; `map` and `maplibregl` are in scope."),
     }),
-    callback: (input) => {
+    callback: async (input) => {
+      if (!(await approveCodeExecution("run_maplibre_js", input.code))) {
+        return json({ ok: false, error: "The user declined to run this code." });
+      }
       const map = deps.getMapController()?.getMap();
       if (!map) throw new Error("The map is not ready yet.");
       // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
@@ -669,7 +671,9 @@ export function createAssistantTools(
         .describe("Parameter values keyed by parameter id; layer params take a layer id."),
     }),
     callback: async (input) => {
-      const result = await (await getScripting()).runAlgorithm({
+      const result = await (
+        await getScripting()
+      ).runAlgorithm({
         id: input.id,
         params: (input.params as Record<string, unknown>) ?? {},
       });
@@ -700,9 +704,7 @@ export function createAssistantTools(
     callback: async (input) => {
       const { STACClient } = await import("maplibre-gl-planetary-computer");
       const bbox =
-        (input.bbox as [number, number, number, number] | undefined) ??
-        viewBbox() ??
-        undefined;
+        (input.bbox as [number, number, number, number] | undefined) ?? viewBbox() ?? undefined;
       const items = await new STACClient().search({
         collections: [input.collection],
         bbox,
@@ -737,18 +739,15 @@ export function createAssistantTools(
       name: z.string().optional(),
     }),
     callback: async (input) => {
-      const { STACClient, TiTilerClient, getDefaultPreset } = await import(
-        "maplibre-gl-planetary-computer"
-      );
+      const { STACClient, TiTilerClient, getDefaultPreset } =
+        await import("maplibre-gl-planetary-computer");
       const stac = new STACClient();
       let item;
       if (input.itemId) {
         item = await stac.getItem(input.collection, input.itemId);
       } else {
         const bbox =
-          (input.bbox as [number, number, number, number] | undefined) ??
-          viewBbox() ??
-          undefined;
+          (input.bbox as [number, number, number, number] | undefined) ?? viewBbox() ?? undefined;
         const items = await stac.search({
           collections: [input.collection],
           bbox,
@@ -757,24 +756,16 @@ export function createAssistantTools(
           sortby: [{ field: "datetime", direction: "desc" }],
         });
         if (!items.length) {
-          throw new Error(
-            `No ${input.collection} items found for the given area/time.`,
-          );
+          throw new Error(`No ${input.collection} items found for the given area/time.`);
         }
         item = items[0];
       }
       const preset = getDefaultPreset(input.collection);
-      const tileUrl = new TiTilerClient().getItemTileUrl(
-        input.collection,
-        item.id,
-        preset?.params,
-      );
+      const tileUrl = new TiTilerClient().getItemTileUrl(input.collection, item.id, preset?.params);
       const bounds = bbox2d(item.bbox);
       const layer: GeoLibreLayer = {
         id: crypto.randomUUID(),
-        name:
-          input.name?.trim() ||
-          `${input.collection} ${item.properties.datetime ?? item.id}`,
+        name: input.name?.trim() || `${input.collection} ${item.properties.datetime ?? item.id}`,
         type: "xyz",
         source: {
           type: "raster",

@@ -1,4 +1,4 @@
-import { isDuckDBQueryLayer, type GeoLibreLayer } from "@geolibre/core";
+import { isDuckDBQueryLayer, SQL_QUERY_SOURCE_KIND, type GeoLibreLayer } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
 
 /**
@@ -34,14 +34,16 @@ export const GEOMETRY_EDIT_FID_PROPERTY = "__geolibre_fid";
  * @param layer The candidate layer, or undefined.
  * @returns True when the layer's geometry can be edited in place.
  */
-export function canEditLayerGeometry(
-  layer: GeoLibreLayer | undefined,
-): boolean {
+export function canEditLayerGeometry(layer: GeoLibreLayer | undefined): boolean {
   if (!layer) return false;
   // Only geojson-mode vector layers; "vector-tiles" (DuckDB tiles) are excluded.
   if (layer.type !== "geojson") return false;
   if (isDuckDBQueryLayer(layer)) return false;
   if (layer.metadata.sourceKind === SKETCHES_SOURCE_KIND) return false;
+  // A query result is derived, not writable: refresh re-runs the stored SQL
+  // and would overwrite any in-place edits. Load a copy into the editor (or
+  // export) to edit the features.
+  if (layer.metadata.sourceKind === SQL_QUERY_SOURCE_KIND) return false;
 
   if (layer.metadata.externalNativeLayer === true) {
     // Externally-rendered layers are only editable when they are Add-Vector-Layer
@@ -93,9 +95,7 @@ function makeIdAllocator(): { take: (preferred?: unknown) => string } {
  * @param collection The layer's feature collection.
  * @returns A new collection with unique ids and a feature-key tag per feature.
  */
-export function tagFeatureKeys(
-  collection: FeatureCollection,
-): FeatureCollection {
+export function tagFeatureKeys(collection: FeatureCollection): FeatureCollection {
   const ids = makeIdAllocator();
   let warnedCollision = false;
   return {
@@ -137,9 +137,7 @@ export function tagFeatureKeys(
  * @param collection The editor's current feature collection (tagged).
  * @returns A new collection with unique stable ids and the tag removed.
  */
-export function reconcileEditedFeatures(
-  collection: FeatureCollection,
-): FeatureCollection {
+export function reconcileEditedFeatures(collection: FeatureCollection): FeatureCollection {
   const ids = makeIdAllocator();
   return {
     type: "FeatureCollection",
@@ -198,9 +196,7 @@ export interface OverlayOrderPlan {
  * @param layers The map's style layers, bottom-to-top, tagged with their roles.
  * @returns The reposition plan, or `null` when no move is needed.
  */
-export function planGeoEditorOverlayOrder(
-  layers: OverlayOrderLayer[],
-): OverlayOrderPlan | null {
+export function planGeoEditorOverlayOrder(layers: OverlayOrderLayer[]): OverlayOrderPlan | null {
   let lastAnchorIndex = -1;
   for (let i = 0; i < layers.length; i += 1) {
     if (layers[i].isAnchor) lastAnchorIndex = i;
@@ -209,9 +205,7 @@ export function planGeoEditorOverlayOrder(
   // where Geoman placed it (on top) rather than guessing a position.
   if (lastAnchorIndex < 0) return null;
 
-  const overlayIds = layers
-    .filter((layer) => layer.isOverlay)
-    .map((layer) => layer.id);
+  const overlayIds = layers.filter((layer) => layer.isOverlay).map((layer) => layer.id);
   if (overlayIds.length === 0) return null;
 
   if (overlayLayersAlreadyPositioned(layers, overlayIds.length, lastAnchorIndex)) {

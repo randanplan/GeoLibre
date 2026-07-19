@@ -1,8 +1,4 @@
-import {
-  projectFromStore,
-  useAppStore,
-  type GeoLibreProject,
-} from "@geolibre/core";
+import { projectFromStore, useAppStore, type GeoLibreProject } from "@geolibre/core";
 import type { RefObject } from "react";
 import type { MapController } from "@geolibre/map";
 import { getPluginManager } from "../hooks/usePlugins";
@@ -40,11 +36,13 @@ export function buildProjectSnapshot(
     legend: state.legend,
     storymap: state.storymap,
     models: state.models,
+    processingHistory: state.processingHistory,
     widgets: state.widgets,
     dashboardColumns: state.dashboardColumns,
     mapLayout: state.mapLayout,
     secondaryMapViews: state.secondaryMapViews,
     primaryMapLabel: state.primaryMapLabel,
+    styleLibrary: state.projectStyleLibrary,
     metadata: state.metadata,
   });
 }

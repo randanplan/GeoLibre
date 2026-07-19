@@ -8,9 +8,15 @@
  * `postgis-connections.ts`.
  */
 
-export const POSTGRES_CONNECTIONS_STORAGE_KEY =
-  "geolibre.postgres.connectionStrings";
+export const POSTGRES_CONNECTIONS_STORAGE_KEY = "geolibre.postgres.connectionStrings";
 export const MAX_SAVED_POSTGRES_CONNECTIONS = 10;
+
+/**
+ * Fired on `window` after the saved-connections list is written, so same-tab
+ * views (e.g. the Browser panel's Databases section) can re-read it — the
+ * native `storage` event only fires cross-tab.
+ */
+export const POSTGRES_CONNECTIONS_CHANGED_EVENT = "geolibre:postgres-connections-changed";
 
 export function uniquePostgresConnections(connections: string[]): string[] {
   return Array.from(new Set(connections));
@@ -23,9 +29,7 @@ export function readSavedPostgresConnections(): string[] {
     if (!value) return [];
     const parsed = JSON.parse(value);
     return Array.isArray(parsed)
-      ? uniquePostgresConnections(
-          parsed.filter((item): item is string => typeof item === "string"),
-        )
+      ? uniquePostgresConnections(parsed.filter((item): item is string => typeof item === "string"))
       : [];
   } catch {
     return [];
@@ -42,10 +46,10 @@ export function rememberPostgresConnection(connectionString: string): string[] {
   ]).slice(0, MAX_SAVED_POSTGRES_CONNECTIONS);
 
   try {
-    window.localStorage.setItem(
-      POSTGRES_CONNECTIONS_STORAGE_KEY,
-      JSON.stringify(connections),
-    );
+    window.localStorage.setItem(POSTGRES_CONNECTIONS_STORAGE_KEY, JSON.stringify(connections));
+    // Notify same-tab listeners (the Browser panel) so a newly-saved connection
+    // appears without closing and reopening the panel.
+    window.dispatchEvent(new Event(POSTGRES_CONNECTIONS_CHANGED_EVENT));
   } catch {
     // Best-effort persistence: a quota/private-mode failure must not abort the
     // connect flow (mirrors readSavedPostgresConnections' guard).

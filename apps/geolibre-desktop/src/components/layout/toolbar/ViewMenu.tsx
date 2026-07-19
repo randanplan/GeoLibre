@@ -19,9 +19,11 @@ import {
   ArrowRight,
   Compass,
   Crosshair,
+  Earth,
   Eye,
   LayoutGrid,
   Link2,
+  MapIcon,
   Mountain,
   RotateCcw,
   ZoomIn,
@@ -75,6 +77,10 @@ interface ViewMenuProps {
   onResetPitchBearing: () => void;
   /** Open the dialog for typing an exact camera (center/zoom/pitch/bearing). */
   onSetView: () => void;
+  /** Open the current map view in Google Earth in the system browser. */
+  onViewInGoogleEarth: () => void;
+  /** Open the current map view in Google Maps in the system browser. */
+  onViewInGoogleMaps: () => void;
   /** Animate the map in by one zoom level. */
   onZoomIn: () => void;
   /** Animate the map out by one zoom level. */
@@ -95,6 +101,8 @@ export function ViewMenu({
   onResetPitch,
   onResetPitchBearing,
   onSetView,
+  onViewInGoogleEarth,
+  onViewInGoogleMaps,
   onZoomIn,
   onZoomOut,
 }: ViewMenuProps) {
@@ -115,13 +123,11 @@ export function ViewMenu({
   const pitchIsFlat = camera != null && Math.abs(camera.pitch) < 1e-2;
   const show = (id: string) => isMenuItemVisible(uiProfile, id);
   const showZoom = show("view.zoomIn") || show("view.zoomOut");
-  const showNavigation =
-    show("view.previousView") || show("view.nextView");
+  const showNavigation = show("view.previousView") || show("view.nextView");
   const showResetPitch = show("view.resetPitch");
   const showResetBearing = show("view.resetNorth");
   const showResetPitchBearing = show("view.resetPitchBearing");
-  const showReset =
-    showResetPitch || showResetBearing || showResetPitchBearing;
+  const showReset = showResetPitch || showResetBearing || showResetPitchBearing;
   // The submenu is a dead end when every item it would show is already at its
   // baseline, so disable the trigger then rather than open it to all-greyed
   // items (#720 review). A hidden item can't block, so it counts as "disabled".
@@ -131,18 +137,15 @@ export function ViewMenu({
     (!showResetPitchBearing || (bearingIsNorth && pitchIsFlat));
   const showSetView = show("view.setView");
   const showSplitView = show("view.splitView");
+  const showGoogleMaps = show("view.googleMaps");
+  const showGoogleEarth = show("view.googleEarth");
+  const showExternal = showGoogleMaps || showGoogleEarth;
   const paneCount = mapLayout.rows * mapLayout.cols;
   const gridKey = `${mapLayout.rows}x${mapLayout.cols}`;
   // A custom profile could hide every item; render nothing rather than a menu
   // whose dropdown is an empty shell. (TopToolbar's isMenuVisible guard normally
   // hides the menu first, but don't rely on that invariant here.)
-  if (
-    !showZoom &&
-    !showNavigation &&
-    !showReset &&
-    !showSetView &&
-    !showSplitView
-  )
+  if (!showZoom && !showNavigation && !showReset && !showSetView && !showSplitView && !showExternal)
     return null;
 
   return (
@@ -167,46 +170,30 @@ export function ViewMenu({
         <DropdownMenuSeparator />
         {show("view.zoomIn") && (
           <DropdownMenuItem disabled={atMaxZoom} onSelect={onZoomIn}>
-            <ZoomIn className="mr-2 h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">
-              {t("toolbar.item.zoomIn")}
-            </span>
+            <ZoomIn className="me-2 h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t("toolbar.item.zoomIn")}</span>
           </DropdownMenuItem>
         )}
         {show("view.zoomOut") && (
           <DropdownMenuItem disabled={atMinZoom} onSelect={onZoomOut}>
-            <ZoomOut className="mr-2 h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">
-              {t("toolbar.item.zoomOut")}
-            </span>
+            <ZoomOut className="me-2 h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t("toolbar.item.zoomOut")}</span>
           </DropdownMenuItem>
         )}
         {showZoom && showNavigation && <DropdownMenuSeparator />}
         {show("view.previousView") && (
-          <DropdownMenuItem
-            disabled={!history.canGoBack}
-            onSelect={history.goBack}
-          >
-            <ArrowLeft className="mr-2 h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">
-              {t("toolbar.item.previousView")}
-            </span>
+          <DropdownMenuItem disabled={!history.canGoBack} onSelect={history.goBack}>
+            <ArrowLeft className="me-2 h-3.5 w-3.5 shrink-0 rtl:rotate-180" />
+            <span className="whitespace-nowrap">{t("toolbar.item.previousView")}</span>
           </DropdownMenuItem>
         )}
         {show("view.nextView") && (
-          <DropdownMenuItem
-            disabled={!history.canGoForward}
-            onSelect={history.goForward}
-          >
-            <ArrowRight className="mr-2 h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">
-              {t("toolbar.item.nextView")}
-            </span>
+          <DropdownMenuItem disabled={!history.canGoForward} onSelect={history.goForward}>
+            <ArrowRight className="me-2 h-3.5 w-3.5 shrink-0 rtl:rotate-180" />
+            <span className="whitespace-nowrap">{t("toolbar.item.nextView")}</span>
           </DropdownMenuItem>
         )}
-        {(showZoom || showNavigation) && showReset && (
-          <DropdownMenuSeparator />
-        )}
+        {(showZoom || showNavigation) && showReset && <DropdownMenuSeparator />}
         {showReset && (
           <DropdownMenuSub>
             <DropdownMenuSubTrigger
@@ -214,31 +201,19 @@ export function ViewMenu({
               className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
             >
               <RotateCcw className="h-3.5 w-3.5 shrink-0" />
-              <span className="whitespace-nowrap">
-                {t("toolbar.item.resetOrientation")}
-              </span>
+              <span className="whitespace-nowrap">{t("toolbar.item.resetOrientation")}</span>
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="min-w-48">
               {showResetPitch && (
-                <DropdownMenuItem
-                  disabled={pitchIsFlat}
-                  onSelect={onResetPitch}
-                >
-                  <Mountain className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="whitespace-nowrap">
-                    {t("toolbar.item.resetPitch")}
-                  </span>
+                <DropdownMenuItem disabled={pitchIsFlat} onSelect={onResetPitch}>
+                  <Mountain className="me-2 h-3.5 w-3.5 shrink-0" />
+                  <span className="whitespace-nowrap">{t("toolbar.item.resetPitch")}</span>
                 </DropdownMenuItem>
               )}
               {showResetBearing && (
-                <DropdownMenuItem
-                  disabled={bearingIsNorth}
-                  onSelect={onResetNorth}
-                >
-                  <Compass className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="whitespace-nowrap">
-                    {t("toolbar.item.resetBearing")}
-                  </span>
+                <DropdownMenuItem disabled={bearingIsNorth} onSelect={onResetNorth}>
+                  <Compass className="me-2 h-3.5 w-3.5 shrink-0" />
+                  <span className="whitespace-nowrap">{t("toolbar.item.resetBearing")}</span>
                 </DropdownMenuItem>
               )}
               {showResetPitchBearing && (
@@ -246,35 +221,28 @@ export function ViewMenu({
                   disabled={bearingIsNorth && pitchIsFlat}
                   onSelect={onResetPitchBearing}
                 >
-                  <RotateCcw className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span className="whitespace-nowrap">
-                    {t("toolbar.item.resetPitchBearing")}
-                  </span>
+                  <RotateCcw className="me-2 h-3.5 w-3.5 shrink-0" />
+                  <span className="whitespace-nowrap">{t("toolbar.item.resetPitchBearing")}</span>
                 </DropdownMenuItem>
               )}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         )}
-        {(showZoom || showNavigation || showReset) && showSetView && (
-          <DropdownMenuSeparator />
-        )}
+        {(showZoom || showNavigation || showReset) && showSetView && <DropdownMenuSeparator />}
         {showSetView && (
           <DropdownMenuItem onSelect={onSetView}>
-            <Crosshair className="mr-2 h-3.5 w-3.5 shrink-0" />
-            <span className="whitespace-nowrap">
-              {t("toolbar.item.setView")}
-            </span>
+            <Crosshair className="me-2 h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t("toolbar.item.setView")}</span>
           </DropdownMenuItem>
         )}
-        {(showZoom || showNavigation || showReset || showSetView) &&
-          showSplitView && <DropdownMenuSeparator />}
+        {(showZoom || showNavigation || showReset || showSetView) && showSplitView && (
+          <DropdownMenuSeparator />
+        )}
         {showSplitView && (
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
               <LayoutGrid className="h-3.5 w-3.5 shrink-0" />
-              <span className="whitespace-nowrap">
-                {t("toolbar.item.splitView")}
-              </span>
+              <span className="whitespace-nowrap">{t("toolbar.item.splitView")}</span>
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="min-w-48">
               <DropdownMenuRadioGroup
@@ -289,9 +257,7 @@ export function ViewMenu({
                     key={`${preset.rows}x${preset.cols}`}
                     value={`${preset.rows}x${preset.cols}`}
                   >
-                    <span className="whitespace-nowrap">
-                      {t(preset.labelKey)}
-                    </span>
+                    <span className="whitespace-nowrap">{t(preset.labelKey)}</span>
                   </DropdownMenuRadioItem>
                 ))}
                 {/* A grid loaded from a hand-edited project file (e.g. 4x4) may
@@ -311,20 +277,30 @@ export function ViewMenu({
               <DropdownMenuCheckboxItem
                 checked={mapLayout.syncView}
                 disabled={paneCount <= 1}
-                onCheckedChange={(checked: boolean) =>
-                  setSyncView(Boolean(checked))
-                }
+                onCheckedChange={(checked: boolean) => setSyncView(Boolean(checked))}
                 // Radix closes the menu on item select by default; keep it open
                 // so toggling sync doesn't dismiss the submenu mid-comparison.
                 onSelect={(event: Event) => event.preventDefault()}
               >
-                <Link2 className="mr-2 h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-nowrap">
-                  {t("toolbar.item.splitViewSync")}
-                </span>
+                <Link2 className="me-2 h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{t("toolbar.item.splitViewSync")}</span>
               </DropdownMenuCheckboxItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+        )}
+        {(showZoom || showNavigation || showReset || showSetView || showSplitView) &&
+          showExternal && <DropdownMenuSeparator />}
+        {showGoogleMaps && (
+          <DropdownMenuItem onSelect={onViewInGoogleMaps}>
+            <MapIcon className="me-2 h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t("toolbar.item.viewInGoogleMaps")}</span>
+          </DropdownMenuItem>
+        )}
+        {showGoogleEarth && (
+          <DropdownMenuItem onSelect={onViewInGoogleEarth}>
+            <Earth className="me-2 h-3.5 w-3.5 shrink-0" />
+            <span className="whitespace-nowrap">{t("toolbar.item.viewInGoogleEarth")}</span>
+          </DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

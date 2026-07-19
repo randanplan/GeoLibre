@@ -3,10 +3,7 @@
  */
 
 import type { ArcGISLayerType } from "@geolibre/plugins";
-import type {
-  AddDataKind,
-  DelimitedTextDelimiter,
-} from "./types";
+import type { AddDataKind, DelimitedTextDelimiter } from "./types";
 
 // ~10 MB; deck-viz data is stored inline in the project file, so warn (but do
 // not block) when a very large payload would bloat saved projects.
@@ -24,6 +21,7 @@ export type KindI18nKey =
   | "georss"
   | "delimitedText"
   | "cad"
+  | "gdb"
   | "photos"
   | "mbtiles"
   | "arcgis"
@@ -46,6 +44,7 @@ export const KIND_I18N_KEY: Record<AddDataKind, KindI18nKey> = {
   georss: "georss",
   "delimited-text": "delimitedText",
   cad: "cad",
+  gdb: "gdb",
   photos: "photos",
   mbtiles: "mbtiles",
   arcgis: "arcgis",
@@ -59,10 +58,35 @@ export const DEFAULT_XYZ_URL =
 export const DEFAULT_WMS_ENDPOINT =
   "https://imagery.nationalmap.gov/arcgis/services/USGSNAIPImagery/ImageServer/WMSServer";
 export const DEFAULT_WMS_LAYERS = "USGSNAIPImagery:FalseColorComposite";
+// GEBCO global ocean bathymetry — a keyless WMS 1.3.0 service serving the latest
+// GEBCO grid as a shaded-relief image (Web Mercator supported, so it renders on
+// MapLibre). Sourced from the General Bathymetric Chart of the Oceans; requires
+// attribution and must not be used for navigation. See gebco.net/data-products.
+export const GEBCO_WMS_ENDPOINT = "https://wms.gebco.net/mapserv";
+export const GEBCO_WMS_LAYERS = "GEBCO_LATEST";
+// GEBCO's license requires its imagery credit the source. `attributionForTileUrl`
+// (helpers) attaches this to any GEBCO WMS layer, however it was added (the sample
+// below or a hand-pasted wms.gebco.net URL).
+// NOTE: the `GEBCO_LATEST` layer always resolves to GEBCO's newest annual grid,
+// but the year below is not derived from anything — unlike the EOX credit above,
+// whose year lives in the tile URL. Bump this year by hand when GEBCO ships a new
+// annual release (e.g. GEBCO_2027) so the citation does not drift from the data.
+export const GEBCO_ATTRIBUTION =
+  'Imagery reproduced from the GEBCO Compilation Group (2026) GEBCO Grid, <a href="https://www.gebco.net" target="_blank" rel="noreferrer">GEBCO</a>';
 export const DEFAULT_WFS_ENDPOINT = "https://ahocevar.com/geoserver/wfs";
 export const DEFAULT_WFS_TYPE_NAME = "topp:states";
+// EOX "Sentinel-2 cloudless" — a global, keyless RESTful WMTS imagery layer
+// (CC BY 4.0, contains modified Copernicus Sentinel data). Chosen so the WMTS
+// sample doesn't hardcode an Esri/ArcGIS web service. Its GoogleMapsCompatible
+// matrix set serves through ~zoom 18 (building level), on par with the OSM and
+// OpenTopoMap samples, so it doesn't collapse to blank tiles at ordinary zooms.
 export const DEFAULT_WMTS_URL =
-  "https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/119/{z}/{y}/{x}";
+  "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg";
+// EOX Sentinel-2 cloudless is CC BY 4.0, so its imagery must credit the source
+// in the map's attribution control. `attributionForTileUrl` (helpers) attaches
+// this to any EOX tile layer, however it was added.
+export const EOX_S2CLOUDLESS_ATTRIBUTION =
+  'Sentinel-2 cloudless 2025 by <a href="https://s2maps.eu" target="_blank" rel="noreferrer">EOX IT Services GmbH</a> (contains modified Copernicus Sentinel data 2025)';
 // PDOK BGT (Dutch large-scale base map) served as OGC API - Tiles vector tiles.
 // The style document carries the source-layer names the TileJSON omits; both
 // are prefilled so the sample works out of the box (zoom into the Netherlands).
@@ -70,27 +94,21 @@ export const DEFAULT_OGC_VECTOR_TILES_URL =
   "https://api.pdok.nl/lv/bgt/ogc/v1/tiles/WebMercatorQuad?f=tilejson";
 export const DEFAULT_OGC_VECTOR_TILES_STYLE_URL =
   "https://api.pdok.nl/lv/bgt/ogc/v1/styles/bgt_standaardvisualisatie__webmercatorquad?f=mapbox";
-export const DEFAULT_GPX_URL =
-  "https://data.source.coop/giswqs/opengeos/fells_loop.gpx";
+export const DEFAULT_GPX_URL = "https://data.source.coop/giswqs/opengeos/fells_loop.gpx";
 // USGS "Magnitude 2.5+ Earthquakes, Past Day" Atom feed (Simple georss:point).
 export const DEFAULT_GEORSS_URL =
   "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.atom";
-export const DEFAULT_DELIMITED_TEXT_URL =
-  "https://data.source.coop/giswqs/opengeos/us_cities.csv";
+export const DEFAULT_DELIMITED_TEXT_URL = "https://data.source.coop/giswqs/opengeos/us_cities.csv";
 export const DEFAULT_DELIMITED_TEXT_LATITUDE_FIELD = "latitude";
 export const DEFAULT_DELIMITED_TEXT_LONGITUDE_FIELD = "longitude";
 // MapLibre's georeferenced video sample, pre-filled so the dialog works out of
 // the box. The corners are [lng, lat] pairs.
-export const DEFAULT_VIDEO_MP4_URL =
-  "https://static-assets.mapbox.com/mapbox-gl-js/drone.mp4";
-export const DEFAULT_VIDEO_WEBM_URL =
-  "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm";
+export const DEFAULT_VIDEO_MP4_URL = "https://static-assets.mapbox.com/mapbox-gl-js/drone.mp4";
+export const DEFAULT_VIDEO_WEBM_URL = "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm";
 export const DEFAULT_VIDEO_TOP_LEFT = "-122.51596391201019, 37.56238816766053";
 export const DEFAULT_VIDEO_TOP_RIGHT = "-122.51467645168304, 37.56410183312965";
-export const DEFAULT_VIDEO_BOTTOM_RIGHT =
-  "-122.51309394836426, 37.563391708549425";
-export const DEFAULT_VIDEO_BOTTOM_LEFT =
-  "-122.51423120498657, 37.56161849366671";
+export const DEFAULT_VIDEO_BOTTOM_RIGHT = "-122.51309394836426, 37.563391708549425";
+export const DEFAULT_VIDEO_BOTTOM_LEFT = "-122.51423120498657, 37.56161849366671";
 export const DEFAULT_ARCGIS_FEATURE_URL =
   "https://services3.arcgis.com/GVgbJbqm8hXASVYi/arcgis/rest/services/USA_Major_Cities/FeatureServer/0";
 export const DEFAULT_ARCGIS_VECTOR_TILE_URL =
@@ -113,11 +131,16 @@ export const WFS_PROXY_PATH = "/__geolibre_wfs_proxy";
 // service-library.ts). Bumping the key would orphan a user's saved services.
 export const SERVICE_LIBRARY_STORAGE_KEY = "geolibre.serviceLibrary";
 export const MAX_SAVED_SERVICES = 200;
-// A short list of common coordinate systems offered as quick presets in the Add
-// CAD Layer dialog (CAD files carry no CRS of their own, so the user names one).
-// The labels are CRS proper names and stay untranslated; selecting one fills the
-// free-text EPSG field, which remains the source of truth.
-export const CAD_CRS_PRESETS: readonly { label: string; value: string }[] = [
+// Last File Geodatabase (and feature class) added through the GDB source, so
+// reopening the panel restores the selection instead of starting blank.
+export const LAST_GEODATABASE_STORAGE_KEY = "geolibre.lastGeodatabase";
+// A short list of common coordinate systems offered as quick presets wherever a
+// source CRS is named by hand: the Add CAD Layer dialog (CAD files carry no CRS
+// of their own) and the Add Delimited Text Layer dialog (a CSV's coordinate
+// columns may be in any CRS). The labels are CRS proper names and stay
+// untranslated; selecting one fills the free-text EPSG field, which remains the
+// source of truth.
+export const COMMON_CRS_PRESETS: readonly { label: string; value: string }[] = [
   { label: "WGS 84 (EPSG:4326)", value: "EPSG:4326" },
   { label: "Web Mercator (EPSG:3857)", value: "EPSG:3857" },
   { label: "NAD83 (EPSG:4269)", value: "EPSG:4269" },

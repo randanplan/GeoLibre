@@ -1,4 +1,5 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
+import type { FeatureCollection, Geometry, Position } from "geojson";
 
 /**
  * Records an animated camera "tour" across a sequence of keyframes to a video
@@ -40,6 +41,14 @@ export interface TourKeyframe {
 // same range the controls enforce.
 /** Default frames per second sampled from the canvas. */
 export const DEFAULT_FPS = 30;
+/**
+ * Target video bitrate (bits per second). MediaRecorder's implicit default is
+ * conservative (~2.5 Mbps), which visibly blurs detailed map imagery and text;
+ * ~12 Mbps keeps the recording crisp at typical canvas sizes while staying a
+ * reasonable file size. Browsers clamp this to their supported range, so an
+ * over-ambitious value is capped rather than rejected.
+ */
+const DEFAULT_VIDEO_BITS_PER_SECOND = 12_000_000;
 /** Lowest selectable frame rate. */
 export const MIN_FPS = 10;
 /** Highest selectable frame rate. */
@@ -159,26 +168,158 @@ export interface ParsedTourConfig {
   keyframes: TourKeyframeData[];
 }
 
+export interface PathTourOptions {
+  keyframeCount: number;
+  zoom: number;
+  pitch: number;
+  holdSeconds: number;
+  transitionSeconds: number;
+}
+
+const EARTH_RADIUS_METERS = 6_371_008.8;
+
+function isFiniteLngLat(position: Position): position is [number, number] {
+  return (
+    position.length >= 2 &&
+    Number.isFinite(position[0]) &&
+    Number.isFinite(position[1]) &&
+    Math.abs(position[1]) <= 90
+  );
+}
+
+function bearingBetween(a: [number, number], b: [number, number]): number {
+  const lon1 = (a[0] * Math.PI) / 180;
+  const lat1 = (a[1] * Math.PI) / 180;
+  const lon2 = (b[0] * Math.PI) / 180;
+  const lat2 = (b[1] * Math.PI) / 180;
+  const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+  return normalizeBearing((Math.atan2(y, x) * 180) / Math.PI);
+}
+
+function distanceMeters(a: [number, number], b: [number, number]): number {
+  const lat1 = (a[1] * Math.PI) / 180;
+  const lat2 = (b[1] * Math.PI) / 180;
+  const dLat = lat2 - lat1;
+  const dLon = ((b[0] - a[0]) * Math.PI) / 180;
+  const hav = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav));
+}
+
+function interpolateLngLat(
+  a: [number, number],
+  b: [number, number],
+  fraction: number,
+): [number, number] {
+  return [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction];
+}
+
+function collectLineStrings(geometry: Geometry | null): [number, number][][] {
+  if (!geometry) return [];
+  switch (geometry.type) {
+    case "LineString":
+      return [geometry.coordinates.filter(isFiniteLngLat).map((p) => [p[0], p[1]])];
+    case "MultiLineString":
+      return geometry.coordinates.map((line) =>
+        line.filter(isFiniteLngLat).map((p) => [p[0], p[1]]),
+      );
+    case "GeometryCollection":
+      return geometry.geometries.flatMap(collectLineStrings);
+    default:
+      return [];
+  }
+}
+
+export function countPathCoordinates(geojson: FeatureCollection): number {
+  return geojson.features
+    .flatMap((feature) => collectLineStrings(feature.geometry))
+    .reduce((count, line) => count + line.length, 0);
+}
+
+function flattenPath(geojson: FeatureCollection): [number, number][] {
+  const points: [number, number][] = [];
+  for (const feature of geojson.features) {
+    for (const line of collectLineStrings(feature.geometry)) {
+      if (line.length < 2) continue;
+      if (points.length > 0) {
+        const last = points[points.length - 1];
+        const first = line[0];
+        if (last[0] !== first[0] || last[1] !== first[1]) points.push(first);
+        points.push(...line.slice(1));
+      } else {
+        points.push(...line);
+      }
+    }
+  }
+  return points;
+}
+
+function samplePathAtDistances(
+  path: [number, number][],
+  count: number,
+): { point: [number, number]; bearing: number }[] {
+  const segments: { start: [number, number]; end: [number, number]; length: number }[] = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const length = distanceMeters(path[i], path[i + 1]);
+    if (length > 0) segments.push({ start: path[i], end: path[i + 1], length });
+  }
+  const total = segments.reduce((sum, segment) => sum + segment.length, 0);
+  if (segments.length === 0 || total <= 0) return [];
+
+  let segmentIndex = 0;
+  let distanceBeforeSegment = 0;
+  return Array.from({ length: count }, (_, index) => {
+    const target = count === 1 ? 0 : (total * index) / (count - 1);
+    while (
+      segmentIndex < segments.length - 1 &&
+      distanceBeforeSegment + segments[segmentIndex].length < target
+    ) {
+      distanceBeforeSegment += segments[segmentIndex].length;
+      segmentIndex += 1;
+    }
+    const segment = segments[segmentIndex];
+    const fraction =
+      segment.length === 0
+        ? 0
+        : clampNumber((target - distanceBeforeSegment) / segment.length, 0, 1);
+    return {
+      point: interpolateLngLat(segment.start, segment.end, fraction),
+      bearing: bearingBetween(segment.start, segment.end),
+    };
+  });
+}
+
+export function generateTourKeyframesFromPath(
+  geojson: FeatureCollection,
+  options: PathTourOptions,
+): TourKeyframeData[] {
+  const path = flattenPath(geojson);
+  const count = clampNumber(Math.round(options.keyframeCount), 2, MAX_KEYFRAMES);
+  const samples = samplePathAtDistances(path, count);
+  if (samples.length < 2) return [];
+  return samples.map((sample) => ({
+    center: [roundTo(sample.point[0], 6), roundTo(sample.point[1], 6)],
+    zoom: roundTo(clampNumber(options.zoom, 0, MAX_ZOOM), 3),
+    pitch: roundTo(clampNumber(options.pitch, 0, MAX_PITCH), 1),
+    bearing: roundTo(normalizeBearing(sample.bearing), 1),
+    holdMs: clampHoldMs(options.holdSeconds * 1000),
+    transitionMs: clampTransitionMs(options.transitionSeconds * 1000),
+  }));
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
 /** Clamp a hold duration (ms) into the supported range. */
 function clampHoldMs(value: number): number {
-  return clampNumber(
-    Math.round(value),
-    MIN_HOLD_SECONDS * 1000,
-    MAX_HOLD_SECONDS * 1000,
-  );
+  return clampNumber(Math.round(value), MIN_HOLD_SECONDS * 1000, MAX_HOLD_SECONDS * 1000);
 }
 
 /** Clamp a transition duration (ms) into the supported range. */
 function clampTransitionMs(value: number): number {
-  return clampNumber(
-    Math.round(value),
-    MIN_SEGMENT_SECONDS * 1000,
-    MAX_SEGMENT_SECONDS * 1000,
-  );
+  return clampNumber(Math.round(value), MIN_SEGMENT_SECONDS * 1000, MAX_SEGMENT_SECONDS * 1000);
 }
 
 /** Round to a fixed number of decimals, matching the capture precision. */
@@ -201,10 +342,7 @@ function normalizeBearing(bearing: number): number {
  * session-local keyframe ids are dropped; {@link parseTourConfig} regenerates
  * them on load.
  */
-export function serializeTourConfig(
-  keyframes: readonly TourKeyframe[],
-  fps: number,
-): string {
+export function serializeTourConfig(keyframes: readonly TourKeyframe[], fps: number): string {
   const config: TourConfig = {
     type: TOUR_CONFIG_TYPE,
     version: TOUR_CONFIG_VERSION,
@@ -212,13 +350,11 @@ export function serializeTourConfig(
     // Drop the id; clamp hold and transition on write too (mirroring
     // parseKeyframe) so save/load is symmetric and a programmatic caller can't
     // persist an out-of-range value.
-    keyframes: keyframes.map(
-      ({ id: _id, holdMs, transitionMs, ...rest }) => ({
-        ...rest,
-        holdMs: clampHoldMs(holdMs),
-        transitionMs: clampTransitionMs(transitionMs),
-      }),
-    ),
+    keyframes: keyframes.map(({ id: _id, holdMs, transitionMs, ...rest }) => ({
+      ...rest,
+      holdMs: clampHoldMs(holdMs),
+      transitionMs: clampTransitionMs(transitionMs),
+    })),
   };
   return `${JSON.stringify(config, null, 2)}\n`;
 }
@@ -229,10 +365,7 @@ function num(value: unknown, fallback = 0): number {
 }
 
 /** The camera portion of a keyframe, shared by the v1 and v2 parse paths. */
-type ParsedCamera = Pick<
-  TourKeyframeData,
-  "center" | "zoom" | "pitch" | "bearing"
->;
+type ParsedCamera = Pick<TourKeyframeData, "center" | "zoom" | "pitch" | "bearing">;
 
 /**
  * Validate a single keyframe's structure and normalize its camera to MapLibre's
@@ -280,9 +413,7 @@ function parseKeyframe(raw: unknown): TourKeyframeData {
   return {
     ...camera,
     holdMs: clampHoldMs(num(kf.holdMs, DEFAULT_HOLD_SECONDS * 1000)),
-    transitionMs: clampTransitionMs(
-      num(kf.transitionMs, DEFAULT_SEGMENT_SECONDS * 1000),
-    ),
+    transitionMs: clampTransitionMs(num(kf.transitionMs, DEFAULT_SEGMENT_SECONDS * 1000)),
   };
 }
 
@@ -388,9 +519,7 @@ export function parseTourConfig(text: string): ParsedTourConfig {
   // absence of v2 fields means a hand-edited file mixing both formats is read as
   // v2 (keeping its persisted holds) rather than silently migrated to defaults.
   const hasField = (name: string) =>
-    rawKeyframes.some(
-      (kf) => kf !== null && typeof kf === "object" && name in kf,
-    );
+    rawKeyframes.some((kf) => kf !== null && typeof kf === "object" && name in kf);
   const isLegacy =
     obj.version === 1 ||
     (obj.version === undefined &&
@@ -417,9 +546,7 @@ export function isTourRecordingSupported(): boolean {
     typeof MediaRecorder !== "undefined" &&
     typeof HTMLCanvasElement !== "undefined" &&
     typeof HTMLCanvasElement.prototype.captureStream === "function" &&
-    pickSupportedMimeType(TOUR_MIME_CANDIDATES, (t) =>
-      MediaRecorder.isTypeSupported(t),
-    ) !== null
+    pickSupportedMimeType(TOUR_MIME_CANDIDATES, (t) => MediaRecorder.isTypeSupported(t)) !== null
   );
 }
 
@@ -548,8 +675,9 @@ export async function recordTour({
   if (keyframes.length < 2) {
     throw new Error("A tour needs at least two keyframes.");
   }
-  const mimeType = pickSupportedMimeType(TOUR_MIME_CANDIDATES, (t) =>
-    typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t),
+  const mimeType = pickSupportedMimeType(
+    TOUR_MIME_CANDIDATES,
+    (t) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t),
   );
   // mimeType is null when MediaRecorder is undefined (the callback returns false
   // for every candidate), so this also covers the no-MediaRecorder case.
@@ -565,7 +693,10 @@ export async function recordTour({
   const stream = canvas.captureStream(fps);
   let recorder: MediaRecorder;
   try {
-    recorder = new MediaRecorder(stream, { mimeType });
+    recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: DEFAULT_VIDEO_BITS_PER_SECOND,
+    });
   } catch {
     // The constructor can still reject a codec that isTypeSupported accepted;
     // stop the capture so it isn't leaked when we never reach the finally below,
@@ -619,10 +750,7 @@ export async function recordTour({
   const pump = () => {
     map.triggerRepaint();
     if (startedAt && totalMs > 0) {
-      const percent = Math.min(
-        100,
-        Math.round(((performance.now() - startedAt) / totalMs) * 100),
-      );
+      const percent = Math.min(100, Math.round(((performance.now() - startedAt) / totalMs) * 100));
       if (percent !== lastPercent) {
         lastPercent = percent;
         onProgress?.(percent / 100);

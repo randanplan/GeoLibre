@@ -55,9 +55,7 @@ export function HelpMenu({
   // The Microsoft Store build strips the "Check for updates" item entirely so the
   // app only updates through the Store (policy 10.2.5); other builds keep it.
   const show = (id: string) =>
-    id === "help.checkForUpdates" && IS_STORE_BUILD
-      ? false
-      : isMenuItemVisible(uiProfile, id);
+    id === "help.checkForUpdates" && IS_STORE_BUILD ? false : isMenuItemVisible(uiProfile, id);
 
   return (
     <DropdownMenu>
@@ -77,13 +75,13 @@ export function HelpMenu({
         <DropdownMenuSeparator />
         {show("help.commandPalette") && (
           <DropdownMenuItem onSelect={onOpenCommandPalette}>
-            <Search className="mr-2 h-3.5 w-3.5" />
+            <Search className="me-2 h-3.5 w-3.5" />
             {t("toolbar.item.commandPalette")}
           </DropdownMenuItem>
         )}
         {show("help.keyboardShortcuts") && (
           <DropdownMenuItem onSelect={onOpenShortcuts}>
-            <Keyboard className="mr-2 h-3.5 w-3.5" />
+            <Keyboard className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.keyboardShortcuts")}
           </DropdownMenuItem>
         )}
@@ -92,13 +90,13 @@ export function HelpMenu({
         )}
         {show("help.website") && (
           <DropdownMenuItem onSelect={() => void openExternalLink(WEBSITE_URL)}>
-            <Globe className="mr-2 h-3.5 w-3.5" />
+            <Globe className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.website")}
           </DropdownMenuItem>
         )}
         {show("help.github") && (
           <DropdownMenuItem onSelect={() => void openExternalLink(GITHUB_URL)}>
-            <FolderGit2 className="mr-2 h-3.5 w-3.5" />
+            <FolderGit2 className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.githubRepository")}
           </DropdownMenuItem>
         )}
@@ -109,10 +107,10 @@ export function HelpMenu({
             show("help.about")) && <DropdownMenuSeparator />}
         {show("help.diagnostics") && (
           <DropdownMenuItem onSelect={onOpenDiagnostics}>
-            <Bug className="mr-2 h-3.5 w-3.5" />
+            <Bug className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.diagnostics")}
             {diagnosticsErrorCount > 0 ? (
-              <span className="ml-2 rounded bg-destructive px-1.5 py-0.5 text-[10px] leading-none text-destructive-foreground">
+              <span className="ms-2 rounded bg-destructive px-1.5 py-0.5 text-[10px] leading-none text-destructive-foreground">
                 {diagnosticsErrorCount}
               </span>
             ) : null}
@@ -120,19 +118,19 @@ export function HelpMenu({
         )}
         {show("help.feedback") && (
           <DropdownMenuItem onSelect={() => void openExternalLink(FEEDBACK_URL)}>
-            <MessageSquare className="mr-2 h-3.5 w-3.5" />
+            <MessageSquare className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.giveFeedback")}
           </DropdownMenuItem>
         )}
         {show("help.checkForUpdates") && (
           <DropdownMenuItem onSelect={onCheckForUpdates}>
-            <RefreshCw className="mr-2 h-3.5 w-3.5" />
+            <RefreshCw className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.checkForUpdates")}
           </DropdownMenuItem>
         )}
         {show("help.about") && (
           <DropdownMenuItem onSelect={onAbout}>
-            <Info className="mr-2 h-3.5 w-3.5" />
+            <Info className="me-2 h-3.5 w-3.5" />
             {t("toolbar.command.about")}
           </DropdownMenuItem>
         )}

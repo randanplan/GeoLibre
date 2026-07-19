@@ -1,4 +1,13 @@
-import { isDuckDBQueryLayer, useAppStore } from "@geolibre/core";
+import { useTranslation } from "react-i18next";
+import {
+  coerceAttributeFormValue,
+  isDuckDBQueryLayer,
+  useAppStore,
+  validateAttributeFormValues,
+  type AttributeFormConfig,
+  type AttributeFormFieldConfig,
+  type AttributeFormFieldError,
+} from "@geolibre/core";
 import {
   getDuckDBLayerRows,
   getGeometryEditTargetLayerId,
@@ -55,6 +64,7 @@ import {
   RotateCcw,
   Save,
   Sigma,
+  SquareFunction,
   TableProperties,
   Telescope,
   Trash2,
@@ -91,6 +101,16 @@ import {
   fieldReference,
   type CalcOutputType,
 } from "../../lib/attribute-expression";
+import { attributeFormErrorMessage } from "../../lib/attribute-form-messages";
+import { computeRowSelection } from "../../lib/attribute-selection";
+import { RESERVED_PROPERTY_KEYS } from "../../lib/field-collection";
+import {
+  AREA_UNITS,
+  detectGeometryFamilies,
+  DISTANCE_UNITS,
+  UNIT_SYMBOLS,
+  type GeometryMetric,
+} from "../../lib/geometry-measure";
 import { AttributeChartDialog } from "./AttributeChartDialog";
 import { AttributeStatsDialog } from "./AttributeStatsDialog";
 import { ColumnExplorerDialog } from "./ColumnExplorerDialog";
@@ -102,10 +122,7 @@ import {
   shapefileFieldWarnings,
   type VectorExportFormat,
 } from "../../lib/vector-export";
-import {
-  PANEL_RESIZE_END_EVENT,
-  PANEL_RESIZE_START_EVENT,
-} from "../../lib/panel-resize";
+import { PANEL_RESIZE_END_EVENT, PANEL_RESIZE_START_EVENT } from "../../lib/panel-resize";
 
 type SortDirection = "asc" | "desc";
 type SortKey = "__featureId" | string;
@@ -115,6 +132,10 @@ type AttributeTableRow = {
   featureId: string;
   properties: Record<string, unknown>;
 };
+
+/** Reserved inline-image property keys (photo thumbnail + full-resolution) that
+ * hold data URLs, so they are hidden from the attribute table's columns. */
+const RESERVED_IMAGE_KEYS = new Set<string>(RESERVED_PROPERTY_KEYS);
 
 const DEFAULT_FEATURE_ID_COLUMN_WIDTH = 72;
 const DEFAULT_ATTRIBUTE_COLUMN_WIDTH = 160;
@@ -192,14 +213,13 @@ function isInvalidObjectDraft(draft: string, previousValue: unknown): boolean {
 }
 
 function hasDraftEdits(drafts: AttributeDrafts): boolean {
-  return Object.values(drafts).some(
-    (columns) => Object.keys(columns).length > 0,
-  );
+  return Object.values(drafts).some((columns) => Object.keys(columns).length > 0);
 }
 
 function applyDraftsToFeatures(
   features: Feature[],
   drafts: AttributeDrafts,
+  formFields?: Map<string, AttributeFormFieldConfig>,
 ): Feature[] {
   return features.map((feature, index) => {
     const featureId = String(feature.id ?? index);
@@ -212,16 +232,75 @@ function applyDraftsToFeatures(
       // Skip drafts that are invalid JSON for an object-typed cell so we never
       // persist or export a type-corrupted value; the existing value is kept.
       if (isInvalidObjectDraft(draft, previousValue)) continue;
-      properties[column] = parseAttributeDraft(draft, previousValue);
+      // A column with an Attribute Form widget coerces by widget type (a
+      // number widget stores a number even into a previously-null cell);
+      // unconfigured columns keep the previous-value type inference.
+      const config = formFields?.get(column);
+      properties[column] = config
+        ? coerceAttributeFormValue(config, draft)
+        : parseAttributeDraft(draft, previousValue);
     }
 
     return { ...feature, properties };
   });
 }
 
-function duckDBRowsToAttributeRows(
-  rows: DuckDBAttributeRow[],
-): AttributeTableRow[] {
+/**
+ * Validate drafted rows against the layer's Attribute Form config. Only edits
+ * that introduce (or keep, on an edited field) a violation are reported —
+ * pre-existing violations on untouched fields never block an unrelated edit.
+ * Iterates the drafts (few rows), not the whole table; `featureById` is the
+ * memoized feature index so no per-keystroke full scan happens here. Returns
+ * featureId → field → error for every blocking violation.
+ */
+function computeFormDraftErrors(
+  form: AttributeFormConfig | undefined,
+  drafts: AttributeDrafts,
+  featureById: Map<string, Feature> | null,
+): Record<string, Record<string, AttributeFormFieldError>> {
+  const result: Record<string, Record<string, AttributeFormFieldError>> = {};
+  if (!form?.fields.length || !featureById || !hasDraftEdits(drafts)) {
+    return result;
+  }
+
+  const formFields = new Map(form.fields.map((entry) => [entry.field, entry]));
+
+  for (const [featureId, rowDrafts] of Object.entries(drafts)) {
+    if (Object.keys(rowDrafts).length === 0) continue;
+    const feature = featureById.get(featureId);
+    if (!feature) continue;
+    const properties = (feature.properties ?? {}) as Record<string, unknown>;
+
+    const candidate = { ...properties };
+    for (const [column, draft] of Object.entries(rowDrafts)) {
+      const previousValue = properties[column];
+      if (isInvalidObjectDraft(draft, previousValue)) continue;
+      const config = formFields.get(column);
+      candidate[column] = config
+        ? coerceAttributeFormValue(config, draft)
+        : parseAttributeDraft(draft, previousValue);
+    }
+
+    const validation = validateAttributeFormValues(form, candidate, {
+      feature,
+    });
+    if (validation.ok) continue;
+
+    const baseline = validateAttributeFormValues(form, properties, {
+      feature,
+    });
+    const rowErrors: Record<string, AttributeFormFieldError> = {};
+    for (const [field, error] of Object.entries(validation.errors)) {
+      if (rowDrafts[field] !== undefined || !baseline.errors[field]) {
+        rowErrors[field] = error;
+      }
+    }
+    if (Object.keys(rowErrors).length > 0) result[featureId] = rowErrors;
+  }
+  return result;
+}
+
+function duckDBRowsToAttributeRows(rows: DuckDBAttributeRow[]): AttributeTableRow[] {
   return rows.map((row) => ({
     featureId: row.featureId,
     properties: row.properties,
@@ -257,6 +336,10 @@ interface AttributeTableProps {
 }
 
 export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
+  const { t } = useTranslation();
+  // Column order is visual: in a right-to-left layout the first column renders
+  // rightmost, so the move-left/right actions and their guards swap.
+  const isRtl = document.documentElement.dir === "rtl";
   const tableSectionRef = useRef<HTMLElement>(null);
   const tableResizeGuideRef = useRef<HTMLDivElement>(null);
   // The Radix ScrollArea viewport, used as the virtualizer's scroll container.
@@ -266,17 +349,15 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   const attributeFilter = useAppStore((s) => s.attributeFilter);
   const setAttributeFilter = useAppStore((s) => s.setAttributeFilter);
   const selectedFeatureId = useAppStore((s) => s.selectedFeatureId);
+  const selectedFeatureIds = useAppStore((s) => s.selectedFeatureIds);
   const selectFeature = useAppStore((s) => s.selectFeature);
+  const selectFeatures = useAppStore((s) => s.selectFeatures);
   const attributeTableOpen = useAppStore((s) => s.ui.attributeTableOpen);
   const setAttributeTableOpen = useAppStore((s) => s.setAttributeTableOpen);
   const setDashboardOpen = useAppStore((s) => s.setDashboardOpen);
   const updateLayer = useAppStore((s) => s.updateLayer);
-  const zoomToSelectedFeature = useAppStore(
-    (s) => s.ui.zoomToSelectedFeature,
-  );
-  const setZoomToSelectedFeature = useAppStore(
-    (s) => s.setZoomToSelectedFeature,
-  );
+  const zoomToSelectedFeature = useAppStore((s) => s.ui.zoomToSelectedFeature);
+  const setZoomToSelectedFeature = useAppStore((s) => s.setZoomToSelectedFeature);
   const [sort, setSort] = useState<{
     key: SortKey;
     direction: SortDirection;
@@ -285,6 +366,9 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     direction: "asc",
   });
   const [columnWidths, setColumnWidths] = useState<ColumnWidths>({});
+  // "all" shows every feature; "selected" restricts the table to the current
+  // multi-selection (the Show All / Show Selected dropdown).
+  const [featureView, setFeatureView] = useState<"all" | "selected">("all");
   const [tableHeight, setTableHeight] = useState(DEFAULT_TABLE_HEIGHT);
   // Collapsed shows only the toolbar header, hiding the table body, while the
   // panel stays open. Distinct from closing the panel entirely (the X button).
@@ -302,9 +386,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   // Set true by Escape/commit so the input's blur does not re-commit a rename
   // from a stale closure (mirrors LayerPanel's rename guard).
   const suppressColumnBlurRef = useRef(false);
-  const [columnPendingDelete, setColumnPendingDelete] = useState<string | null>(
-    null,
-  );
+  const [columnPendingDelete, setColumnPendingDelete] = useState<string | null>(null);
   // New-field creation dialog state.
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
@@ -325,10 +407,36 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   const [calcExpression, setCalcExpression] = useState("");
   const [calcSelectedOnly, setCalcSelectedOnly] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
+  // Geometry-measurement helper inside the calculator: which metric and unit the
+  // "Insert" button builds a `$length/$perimeter/$area(...)` snippet from.
+  const [calcGeomMetric, setCalcGeomMetric] = useState<GeometryMetric>("length");
+  const [calcGeomUnit, setCalcGeomUnit] = useState<string>("meters");
   const calcExpressionRef = useRef<HTMLTextAreaElement>(null);
 
   const layer = layers.find((l) => l.id === selectedLayerId);
   const hasLayer = Boolean(layer);
+  // Columns materialized by persistent joins are derived data: every save
+  // re-derives them from the join table, so an edit, rename, or delete here
+  // would be silently undone. Render them read-only instead.
+  const joinDerivedColumns = useMemo(
+    () => new Set((layer?.joins ?? []).flatMap((join) => join.addedFields ?? [])),
+    [layer?.joins],
+  );
+  // Same for columns computed by virtual fields (expression-backed, re-derived
+  // on every data change): read-only here, managed in Layer properties.
+  const virtualFieldColumns = useMemo(
+    () =>
+      new Set(
+        (layer?.virtualFields ?? []).flatMap((field) =>
+          field.addedField ? [field.addedField] : [],
+        ),
+      ),
+    [layer?.virtualFields],
+  );
+  const derivedColumns = useMemo(
+    () => new Set([...joinDerivedColumns, ...virtualFieldColumns]),
+    [joinDerivedColumns, virtualFieldColumns],
+  );
   const features = layer?.geojson?.features ?? [];
   const isDuckDBLayer = isDuckDBQueryLayer(layer);
   const duckdbRows = layer && isDuckDBLayer ? getDuckDBLayerRows(layer.id) : [];
@@ -350,8 +458,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     subscribeGeometryEdit,
     getGeometryEditTargetLayerId,
   );
-  const isGeometryEditing =
-    layer != null && geometryEditLayerId === layer.id;
+  const isGeometryEditing = layer != null && geometryEditLayerId === layer.id;
 
   // Vector layers added via the Add Vector Layer control keep their features in
   // a MapLibre GeoJSON source rather than in `layer.geojson`. Read the data back
@@ -412,6 +519,31 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       isInvalidObjectDraft(draft, row.properties[column]),
     );
   });
+  // Attribute Form designer config: per-column edit widgets plus constraint
+  // validation of drafted rows. DuckDB layers keep the plain text editor —
+  // the designer is only offered for store-backed geojson layers.
+  const attributeForm = isDuckDBLayer ? undefined : layer?.attributeForm;
+  const formFields = useMemo(
+    () => new Map((attributeForm?.fields ?? []).map((entry) => [entry.field, entry])),
+    [attributeForm],
+  );
+  // Feature index for validation, rebuilt only when the layer data (not a
+  // draft keystroke) changes; null when no form config is active.
+  const formFeatureIndex = useMemo(() => {
+    if (!attributeForm?.fields.length) return null;
+    const geojsonFeatures = layer?.geojson?.features ?? [];
+    return new Map(
+      geojsonFeatures.map((feature, index): [string, Feature] => [
+        String(feature.id ?? index),
+        feature,
+      ]),
+    );
+  }, [attributeForm, layer?.geojson]);
+  const formDraftErrors = useMemo(
+    () => computeFormDraftErrors(attributeForm, drafts, formFeatureIndex),
+    [attributeForm, drafts, formFeatureIndex],
+  );
+  const hasFormErrors = Object.keys(formDraftErrors).length > 0;
 
   useEffect(() => {
     setIsEditing(false);
@@ -448,24 +580,55 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     if (!attributeTableOpen) setCollapsed(false);
   }, [attributeTableOpen]);
 
+  // "Show Selected Features" over an empty selection is a blank table; fall back
+  // to showing everything once nothing is selected (e.g. after clearing or
+  // switching layers).
+  useEffect(() => {
+    if (selectedFeatureIds.length === 0) setFeatureView("all");
+  }, [selectedFeatureIds.length]);
+
+  // O(1) lookups for the multi-selection while rendering thousands of rows.
+  const selectedIdSet = useMemo(() => new Set(selectedFeatureIds), [selectedFeatureIds]);
+
   const filterLower = attributeFilter.toLowerCase();
   const filtered = attributeRows.filter(({ properties, featureId }) => {
+    // "Show Selected Features" restricts the table to the current selection.
+    if (featureView === "selected" && !selectedIdSet.has(featureId)) return false;
     if (!filterLower) return true;
     const props = JSON.stringify(properties).toLowerCase();
     return featureId.includes(filterLower) || props.includes(filterLower);
   });
   const sorted = [...filtered].sort((a, b) => {
-    const aValue =
-      sort.key === "__featureId"
-        ? a.featureId
-        : a.properties[sort.key];
-    const bValue =
-      sort.key === "__featureId"
-        ? b.featureId
-        : b.properties[sort.key];
+    const aValue = sort.key === "__featureId" ? a.featureId : a.properties[sort.key];
+    const bValue = sort.key === "__featureId" ? b.featureId : b.properties[sort.key];
     const result = compareAttributeValues(aValue, bValue);
     return sort.direction === "asc" ? result : -result;
   });
+
+  // Row selection with keyboard modifiers (plain / Ctrl-toggle / Shift-range /
+  // Shift+Ctrl merge). The branching lives in the pure `computeRowSelection`
+  // helper so it can be unit-tested; here we just feed it the current state.
+  const handleRowClick = (featureId: string, event: ReactMouseEvent<HTMLTableRowElement>) => {
+    const additive = event.ctrlKey || event.metaKey;
+    const range = event.shiftKey;
+    const { ids, anchor } = computeRowSelection({
+      featureId,
+      sortedIds: sorted.map((row) => row.featureId),
+      selectedIds: selectedFeatureIds,
+      anchorId: selectedFeatureId,
+      additive,
+      range,
+    });
+    // A plain click ("make this the sole selection") while reviewing the
+    // "Show Selected" subset would otherwise shrink the table to that one row.
+    // Drop back to "Show All" so the pick lands in the full table instead of
+    // stranding the user on a single-row view. Modifier clicks are deliberate
+    // refinements of the shown set, so they stay in the selected view.
+    if (!additive && !range && featureView === "selected") {
+      setFeatureView("all");
+    }
+    selectFeatures(ids, anchor);
+  };
 
   // Row virtualization: only the rows in (and just around) the viewport are
   // mounted, so opening the table on a layer with tens of thousands of features
@@ -491,9 +654,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   // off-screen rows while keeping the native <table> column layout intact.
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
   const paddingBottom =
-    virtualRows.length > 0
-      ? virtualTotalSize - virtualRows[virtualRows.length - 1].end
-      : 0;
+    virtualRows.length > 0 ? virtualTotalSize - virtualRows[virtualRows.length - 1].end : 0;
 
   // Bring the selected feature's row into view. With virtualization the row may
   // be unmounted (e.g. when a feature is picked on the map), so a plain CSS
@@ -507,9 +668,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   // different position for the selected row).
   useEffect(() => {
     if (!attributeTableOpen || !selectedFeatureId) return;
-    const index = sorted.findIndex(
-      (row) => row.featureId === selectedFeatureId,
-    );
+    const index = sorted.findIndex((row) => row.featureId === selectedFeatureId);
     if (index >= 0) rowVirtualizer.scrollToIndex(index, { align: "auto" });
     // `sorted`/`rowVirtualizer` are rebuilt every render and so are intentionally
     // excluded; the dependencies below are the inputs that actually change which
@@ -527,7 +686,10 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   const propKeys = new Set<string>();
   for (const row of attributeRows) {
     for (const k of Object.keys(row.properties)) {
-      propKeys.add(k);
+      // The inline photo/full-resolution image keys are multi-KB-to-MB data
+      // URLs (the map popup and Identify render them as thumbnails instead); a
+      // table cell would dump the raw base64 as text and jank on large photos.
+      if (!RESERVED_IMAGE_KEYS.has(k)) propKeys.add(k);
     }
   }
   const discoveredColumns = Array.from(propKeys);
@@ -540,18 +702,12 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   // Column management mutates layer.geojson/style/metadata, so it is offered
   // only for in-store, editable GeoJSON layers — not DuckDB query results or
   // Add Vector Layer layers (whose geojson is not persisted).
-  const canManageColumns =
-    Boolean(layer?.geojson) && !isDuckDBLayer && !isReadOnlyVectorLayer;
+  const canManageColumns = Boolean(layer?.geojson) && !isDuckDBLayer && !isReadOnlyVectorLayer;
 
   const columnWidth = (key: SortKey) =>
     columnWidths[key] ??
-    (key === "__featureId"
-      ? DEFAULT_FEATURE_ID_COLUMN_WIDTH
-      : DEFAULT_ATTRIBUTE_COLUMN_WIDTH);
-  const tableWidth = tableColumns.reduce(
-    (width, column) => width + columnWidth(column),
-    0,
-  );
+    (key === "__featureId" ? DEFAULT_FEATURE_ID_COLUMN_WIDTH : DEFAULT_ATTRIBUTE_COLUMN_WIDTH);
+  const tableWidth = tableColumns.reduce((width, column) => width + columnWidth(column), 0);
 
   const columnWidthLimits = (key: SortKey) =>
     key === "__featureId"
@@ -564,21 +720,23 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           min: MIN_ATTRIBUTE_COLUMN_WIDTH,
         };
 
-  const startColumnResize = (
-    key: SortKey,
-    event: ReactMouseEvent<HTMLDivElement>,
-  ) => {
+  const startColumnResize = (key: SortKey, event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
 
     const startX = event.clientX;
     const startWidth = columnWidth(key);
     const { min, max } = columnWidthLimits(key);
+    // The handle sits at the column's logical inline-end (`-end-2`) — the right
+    // edge in LTR, the left edge in RTL. clientX still increases to the right in
+    // both, so invert the delta under RTL: dragging the (left-side) RTL handle
+    // outward lowers clientX but should widen the column.
+    const directionSign = getComputedStyle(event.currentTarget).direction === "rtl" ? -1 : 1;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const nextWidth = Math.min(
         max,
-        Math.max(min, startWidth + moveEvent.clientX - startX),
+        Math.max(min, startWidth + directionSign * (moveEvent.clientX - startX)),
       );
       setColumnWidths((current) => ({ ...current, [key]: nextWidth }));
     };
@@ -607,10 +765,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     window.dispatchEvent(new Event(PANEL_RESIZE_START_EVENT));
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const availableHeight = Math.max(
-        MIN_TABLE_HEIGHT,
-        window.innerHeight - 180,
-      );
+      const availableHeight = Math.max(MIN_TABLE_HEIGHT, window.innerHeight - 180);
       const maxHeight = Math.min(MAX_TABLE_HEIGHT, availableHeight);
       nextHeight = Math.min(
         maxHeight,
@@ -621,9 +776,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
         resizeFrame = null;
         if (deferTableResize) {
           if (tableResizeGuideRef.current) {
-            tableResizeGuideRef.current.style.top = `${
-              startY + startHeight - nextHeight
-            }px`;
+            tableResizeGuideRef.current.style.top = `${startY + startHeight - nextHeight}px`;
             tableResizeGuideRef.current.classList.remove("hidden");
           }
           return;
@@ -658,8 +811,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   const toggleSort = (key: SortKey) => {
     setSort((current) => ({
       key,
-      direction:
-        current.key === key && current.direction === "asc" ? "desc" : "asc",
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
     }));
   };
 
@@ -671,6 +823,10 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       <ArrowDown className="h-3.5 w-3.5" />
     );
   };
+
+  // Localize an Attribute Form validation error for a cell tooltip.
+  const formErrorText = (error: AttributeFormFieldError): string =>
+    attributeFormErrorMessage(t, error);
 
   const updateCellDraft = (
     featureId: string,
@@ -715,13 +871,10 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   };
 
   const saveDrafts = () => {
-    if (!layer || !hasEdits || hasInvalidDrafts) return;
+    if (!layer || !hasEdits || hasInvalidDrafts || hasFormErrors) return;
 
     if (isDuckDBLayer) {
-      updateDuckDBLayerRows(
-        layer.id,
-        applyDraftsToDuckDBRows(attributeRows, drafts),
-      );
+      updateDuckDBLayerRows(layer.id, applyDraftsToDuckDBRows(attributeRows, drafts));
       setIsEditing(false);
       setDrafts({});
       return;
@@ -731,7 +884,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
 
     const geojson = {
       ...layer.geojson,
-      features: applyDraftsToFeatures(layer.geojson.features, drafts),
+      features: applyDraftsToFeatures(layer.geojson.features, drafts, formFields),
     };
 
     updateLayer(layer.id, { geojson });
@@ -744,7 +897,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
 
     return {
       ...layer.geojson,
-      features: applyDraftsToFeatures(layer.geojson.features, drafts),
+      features: applyDraftsToFeatures(layer.geojson.features, drafts, formFields),
     };
   };
 
@@ -768,11 +921,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       }
     } catch (error) {
       console.error("Failed to export attribute table", error);
-      setExportError(
-        error instanceof Error
-          ? error.message
-          : "Could not export the selected layer.",
-      );
+      setExportError(error instanceof Error ? error.message : t("attributeTable.exportFailed"));
     }
   };
 
@@ -808,9 +957,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
         const { [oldKey]: width, ...rest } = current;
         return { ...rest, [newKey]: width };
       });
-      setSort((current) =>
-        current.key === oldKey ? { ...current, key: newKey } : current,
-      );
+      setSort((current) => (current.key === oldKey ? { ...current, key: newKey } : current));
     }
     // Always close the editor when committing, even on a no-op (empty,
     // unchanged, or a name that collides with an existing — possibly hidden —
@@ -843,9 +990,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     // Drop a sort that pointed at the deleted column, which would otherwise
     // leave sort.key referencing an absent field (every row compares equal).
     setSort((current) =>
-      current.key === columnPendingDelete
-        ? { key: "__featureId", direction: "asc" }
-        : current,
+      current.key === columnPendingDelete ? { key: "__featureId", direction: "asc" } : current,
     );
     // Drop the deleted column's width so columnWidths doesn't accumulate stale
     // entries across a session (mirrors the migration in commitColumnRename).
@@ -859,13 +1004,11 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
 
   const newColumnNameTrimmed = newColumnName.trim();
   const newColumnCollides =
-    newColumnNameTrimmed !== "" &&
-    discoveredColumns.includes(newColumnNameTrimmed);
+    newColumnNameTrimmed !== "" && discoveredColumns.includes(newColumnNameTrimmed);
   // A field is only discoverable through feature property keys, so a new column
   // cannot be added to a layer with no features (see addColumn).
   const canAddColumn = features.length > 0;
-  const canSubmitNewColumn =
-    newColumnNameTrimmed !== "" && !newColumnCollides && canAddColumn;
+  const canSubmitNewColumn = newColumnNameTrimmed !== "" && !newColumnCollides && canAddColumn;
 
   const openAddColumn = () => {
     setNewColumnName("");
@@ -895,15 +1038,26 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     setAddingColumn(false);
   };
 
+  // The Field Calculator must not target a derived column (joined or virtual)
+  // either: the calculated value would be overwritten by the re-derivation in
+  // the same store update.
+  const calculatorTargetColumns = discoveredColumns.filter((col) => !derivedColumns.has(col));
+
   const openCalculator = () => {
-    const hasColumns = discoveredColumns.length > 0;
+    const hasColumns = calculatorTargetColumns.length > 0;
     setCalcMode(hasColumns ? "update" : "create");
-    setCalcTargetField(hasColumns ? discoveredColumns[0] : "");
+    setCalcTargetField(hasColumns ? calculatorTargetColumns[0] : "");
     setCalcNewName("");
     setCalcOutputType("auto");
     setCalcExpression("");
     setCalcSelectedOnly(false);
     setCalcError(null);
+    // Seed the geometry measurement to a metric that suits the layer; the
+    // effective-metric fallback still corrects any mismatch on render.
+    const families = detectGeometryFamilies(features);
+    const lineOnly = families.has("line") && !families.has("polygon");
+    setCalcGeomMetric(lineOnly ? "length" : "area");
+    setCalcGeomUnit(lineOnly ? "meters" : "square-meters");
     setCalcOpen(true);
   };
 
@@ -930,16 +1084,50 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     setCalcExpression(next);
   };
 
+  // Geometry family drives which measurements the calculator offers: a polygon
+  // layer gets Area/Perimeter, a line layer gets Length, a mixed layer gets all
+  // three, and point/geometry-less layers get none (the row is hidden).
+  const calcGeometryFamilies = useMemo(
+    () => detectGeometryFamilies(features),
+    // Recompute when the layer or its feature count changes, and each time the
+    // dialog opens, so a geometry-type edit made while it was closed is picked
+    // up. The families are otherwise stable across renders (and the calc dialog
+    // is modal, so geometry cannot be edited while it is open). eslint can't see
+    // that the array identity of `features` alone is not a meaningful dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layer?.id, features.length, calcOpen],
+  );
+  const calcAvailableMetrics = useMemo<GeometryMetric[]>(() => {
+    // Offer only metrics the layer's geometry actually supports, so a mixed
+    // point+line layer gets Length but not a no-op Area.
+    const metrics: GeometryMetric[] = [];
+    if (calcGeometryFamilies.has("polygon")) metrics.push("area", "perimeter");
+    if (calcGeometryFamilies.has("line")) metrics.push("length");
+    return metrics;
+  }, [calcGeometryFamilies]);
+  // Fall back to the first available metric/unit when the current selection is
+  // not valid for this layer (e.g. an "area" choice carried over to a line layer).
+  const calcEffectiveMetric = calcAvailableMetrics.includes(calcGeomMetric)
+    ? calcGeomMetric
+    : (calcAvailableMetrics[0] ?? "length");
+  const calcGeomUnitOptions = calcEffectiveMetric === "area" ? AREA_UNITS : DISTANCE_UNITS;
+  const calcEffectiveUnit = (calcGeomUnitOptions as readonly string[]).includes(calcGeomUnit)
+    ? calcGeomUnit
+    : calcGeomUnitOptions[0];
+
+  const insertGeometrySnippet = () => {
+    const snippet = `$${calcEffectiveMetric}(${JSON.stringify(calcEffectiveUnit)})`;
+    insertExpressionSnippet(snippet);
+  };
+
   const calcNewNameTrimmed = calcNewName.trim();
   const calcNameCollides =
     calcMode === "create" &&
     calcNewNameTrimmed !== "" &&
     discoveredColumns.includes(calcNewNameTrimmed);
   const calcHasTarget =
-    calcMode === "create"
-      ? calcNewNameTrimmed !== "" && !calcNameCollides
-      : calcTargetField !== "";
-  const calcHasSelection = Boolean(selectedFeatureId);
+    calcMode === "create" ? calcNewNameTrimmed !== "" && !calcNameCollides : calcTargetField !== "";
+  const calcHasSelection = selectedFeatureIds.length > 0;
 
   // Live preview of the expression against a sample feature: the selected row
   // when present (and a single feature is targeted), else the first row. A
@@ -949,17 +1137,20 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     (calcSelectedOnly && calcHasSelection
       ? attributeRows.find((row) => row.featureId === selectedFeatureId)
       : undefined) ?? attributeRows[0];
-  const calcSampleIndex = calcSampleRow
-    ? attributeRows.indexOf(calcSampleRow)
-    : -1;
+  const calcSampleIndex = calcSampleRow ? attributeRows.indexOf(calcSampleRow) : -1;
   // Stable string keys so the memo skips recompiling the expression on renders
   // that don't change the inputs (discoveredColumns / the sample row are rebuilt
   // with fresh identities every render, so they can't be deps directly).
   // Only serialize while the dialog is open — these exist solely as stable memo
   // deps, and the memo short-circuits to "empty" when closed anyway.
   const calcColumnsKey = calcOpen ? JSON.stringify(discoveredColumns) : "";
-  const calcSampleKey =
-    calcOpen && calcSampleRow ? JSON.stringify(calcSampleRow.properties) : "";
+  const calcSampleKey = calcOpen && calcSampleRow ? JSON.stringify(calcSampleRow.properties) : "";
+  // The preview feeds the sample feature's geometry to $length/$perimeter/$area,
+  // so key on the geometry too — a geometry change (not just a property change)
+  // must recompute the preview. Only one feature is serialized, and only while
+  // the dialog is open.
+  const calcSampleGeomKey =
+    calcOpen && calcSampleRow ? JSON.stringify(features[calcSampleIndex]?.geometry ?? null) : "";
   const calcPreview = useMemo<
     | { kind: "empty" }
     | { kind: "ok"; value: unknown }
@@ -971,19 +1162,25 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       const compiled = compileExpression(calcExpression, discoveredColumns);
       if (!calcSampleRow) return { kind: "ok", value: null };
       try {
-        const raw = compiled.evaluate(calcSampleRow.properties, calcSampleIndex);
+        // attributeRows map 1:1 to geojson features by index, so the sample
+        // row's geometry drives the $length/$perimeter/$area helpers in the
+        // preview (undefined for DuckDB layers, which the helpers treat as 0).
+        const raw = compiled.evaluate(
+          calcSampleRow.properties,
+          calcSampleIndex,
+          features[calcSampleIndex]?.geometry,
+        );
         return { kind: "ok", value: coerceComputedValue(raw, calcOutputType) };
       } catch (error) {
         return {
           kind: "runtime",
-          message:
-            error instanceof Error ? error.message : "Evaluation failed.",
+          message: error instanceof Error ? error.message : t("attributeTable.evaluationFailed"),
         };
       }
     } catch (error) {
       return {
         kind: "syntax",
-        message: error instanceof Error ? error.message : "Invalid expression.",
+        message: error instanceof Error ? error.message : t("attributeTable.invalidExpression"),
       };
     }
     // Keyed on the stable strings above rather than the rebuilt arrays/objects.
@@ -994,6 +1191,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     calcOutputType,
     calcColumnsKey,
     calcSampleKey,
+    calcSampleGeomKey,
     calcSampleIndex,
   ]);
   const calcCanSubmit =
@@ -1004,12 +1202,9 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
 
   const confirmCalculate = () => {
     if (!layer || !calcCanSubmit) return;
-    const targetName =
-      calcMode === "create" ? calcNewNameTrimmed : calcTargetField;
+    const targetName = calcMode === "create" ? calcNewNameTrimmed : calcTargetField;
     const scope =
-      calcSelectedOnly && selectedFeatureId
-        ? new Set([selectedFeatureId])
-        : undefined;
+      calcSelectedOnly && selectedFeatureIds.length > 0 ? new Set(selectedFeatureIds) : undefined;
     const result = calculateField(
       layer,
       discoveredColumns,
@@ -1020,7 +1215,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       scope,
     );
     if (!result) {
-      setCalcError("Could not apply the calculation to this layer.");
+      setCalcError(t("attributeTable.calcCouldNotApply"));
       return;
     }
     if ("error" in result) {
@@ -1033,7 +1228,10 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       // null. Keep the dialog open and report it rather than showing a silent
       // success over a column of nulls.
       setCalcError(
-        `Applied, but ${result.errors} of ${result.evaluated} feature(s) errored and were written as null.`,
+        t("attributeTable.calcAppliedWithErrors", {
+          errors: result.errors,
+          evaluated: result.evaluated,
+        }),
       );
       return;
     }
@@ -1045,7 +1243,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
     <div className="relative flex h-full min-h-10 items-center">
       <button
         type="button"
-        className="flex h-full min-w-0 flex-1 items-center gap-1 pr-3 text-left font-medium"
+        className="flex h-full min-w-0 flex-1 items-center gap-1 pe-3 text-start font-medium"
         onClick={() => toggleSort(key)}
       >
         <span className="truncate">{label}</span>
@@ -1054,8 +1252,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label={`Resize ${label} column`}
-        className="absolute -right-2 top-0 h-full w-3 cursor-col-resize select-none border-r border-transparent hover:border-primary"
+        aria-label={t("attributeTable.resizeColumn", { name: label })}
+        className="absolute -end-2 top-0 h-full w-3 cursor-col-resize select-none border-e border-transparent hover:border-primary"
         onMouseDown={(event) => startColumnResize(key, event)}
       />
     </div>
@@ -1068,7 +1266,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           <Input
             autoFocus
             className="h-7 min-w-0 flex-1 px-2 text-xs"
-            aria-label={`Rename field ${col}`}
+            aria-label={t("attributeTable.renameFieldAria", { name: col })}
             value={editingColumnName}
             onClick={(event) => event.stopPropagation()}
             onFocus={(event) => event.currentTarget.select()}
@@ -1088,8 +1286,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label={`Resize ${col} column`}
-            className="absolute -right-2 top-0 h-full w-3 cursor-col-resize select-none border-r border-transparent hover:border-primary"
+            aria-label={t("attributeTable.resizeColumn", { name: col })}
+            className="absolute -end-2 top-0 h-full w-3 cursor-col-resize select-none border-e border-transparent hover:border-primary"
             onMouseDown={(event) => startColumnResize(col, event)}
           />
         </div>
@@ -1104,10 +1302,22 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       <div className="relative flex h-full min-h-10 items-center">
         <button
           type="button"
-          className="flex h-full min-w-0 flex-1 items-center gap-1 pr-1 text-left font-medium"
+          className="flex h-full min-w-0 flex-1 items-center gap-1 pe-1 text-start font-medium"
           onClick={() => toggleSort(col)}
+          title={virtualFieldColumns.has(col) ? t("attributeTable.virtualColumnTitle") : undefined}
         >
-          <span className="truncate">{col}</span>
+          {/* Virtual (expression-computed) columns get a function glyph and
+              italics so their read-only, derived nature is visible at a
+              glance, as in QGIS. */}
+          {virtualFieldColumns.has(col) && (
+            <SquareFunction
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
+          )}
+          <span className={virtualFieldColumns.has(col) ? "truncate italic" : "truncate"}>
+            {col}
+          </span>
           {renderSortIcon(col)}
         </button>
         <DropdownMenu>
@@ -1116,51 +1326,55 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               variant="ghost"
               size="icon"
               className="h-5 w-5 shrink-0 text-muted-foreground"
-              title={`Manage field "${col}"`}
-              aria-label={`Manage field ${col}`}
+              title={t("attributeTable.manageFieldTitle", { name: col })}
+              aria-label={t("attributeTable.manageFieldAria", { name: col })}
               onClick={(event) => event.stopPropagation()}
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => beginColumnRename(col)}>
-              <Pencil className="mr-2 h-3.5 w-3.5" />
-              Rename field
+            <DropdownMenuItem
+              disabled={derivedColumns.has(col)}
+              onSelect={() => beginColumnRename(col)}
+            >
+              <Pencil className="me-2 h-3.5 w-3.5" />
+              {t("attributeTable.renameField")}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => handleToggleHidden(col)}>
-              <EyeOff className="mr-2 h-3.5 w-3.5" />
-              Hide field
+              <EyeOff className="me-2 h-3.5 w-3.5" />
+              {t("attributeTable.hideField")}
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={index === 0}
-              onSelect={() => handleMoveColumn(col, "left")}
+              disabled={isRtl ? index === columns.length - 1 : index === 0}
+              onSelect={() => handleMoveColumn(col, isRtl ? "right" : "left")}
             >
-              <ArrowLeft className="mr-2 h-3.5 w-3.5" />
-              Move left
+              <ArrowLeft className="me-2 h-3.5 w-3.5" />
+              {t("attributeTable.moveLeft")}
             </DropdownMenuItem>
             <DropdownMenuItem
-              disabled={index === columns.length - 1}
-              onSelect={() => handleMoveColumn(col, "right")}
+              disabled={isRtl ? index === 0 : index === columns.length - 1}
+              onSelect={() => handleMoveColumn(col, isRtl ? "left" : "right")}
             >
-              <ArrowRight className="mr-2 h-3.5 w-3.5" />
-              Move right
+              <ArrowRight className="me-2 h-3.5 w-3.5" />
+              {t("attributeTable.moveRight")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
+              disabled={derivedColumns.has(col)}
               onSelect={() => setColumnPendingDelete(col)}
             >
-              <Trash2 className="mr-2 h-3.5 w-3.5" />
-              Delete field
+              <Trash2 className="me-2 h-3.5 w-3.5" />
+              {t("attributeTable.deleteField")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label={`Resize ${col} column`}
-          className="absolute -right-2 top-0 h-full w-3 cursor-col-resize select-none border-r border-transparent hover:border-primary"
+          aria-label={t("attributeTable.resizeColumn", { name: col })}
+          className="absolute -end-2 top-0 h-full w-3 cursor-col-resize select-none border-e border-transparent hover:border-primary"
           onMouseDown={(event) => startColumnResize(col, event)}
         />
       </div>
@@ -1177,7 +1391,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
   return (
     <section
       ref={tableSectionRef}
-      aria-label="Attribute table"
+      aria-label={t("attributeTable.title")}
       className="relative flex shrink-0 flex-col border-t bg-card"
       style={{ height: collapsed ? undefined : tableHeight }}
     >
@@ -1185,7 +1399,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
         <div
           role="separator"
           aria-orientation="horizontal"
-          aria-label="Resize attribute table"
+          aria-label={t("attributeTable.resize")}
           className="absolute -top-1 left-0 right-0 z-20 h-2 cursor-row-resize select-none border-t border-transparent hover:border-primary"
           onMouseDown={startTableResize}
         />
@@ -1196,47 +1410,44 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       />
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5 md:flex-nowrap">
         <TableProperties className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-semibold">Attribute table</span>
+        <span className="text-sm font-semibold">{t("attributeTable.title")}</span>
         {layer ? (
           <span className="min-w-0 max-w-full truncate text-xs text-muted-foreground md:max-w-56">
-            - {layer.name}
+            {t("attributeTable.selectedLayerName", { name: layer.name })}
           </span>
         ) : (
           <span className="min-w-0 max-w-full truncate text-xs text-muted-foreground md:max-w-56">
-            - select a layer with attributes
+            {t("attributeTable.noLayerSelected")}
           </span>
         )}
         {exportError ? (
-          <span className="max-w-48 truncate text-xs text-destructive">
-            {exportError}
-          </span>
+          <span className="max-w-48 truncate text-xs text-destructive">{exportError}</span>
         ) : exportWarning ? (
-          <span
-            className="max-w-48 truncate text-xs text-amber-600"
-            title={exportWarning}
-          >
+          <span className="max-w-48 truncate text-xs text-amber-600" title={exportWarning}>
             {exportWarning}
           </span>
         ) : null}
         <Button
           variant={isEditing ? "secondary" : "outline"}
           size="sm"
-          className="ml-auto h-7 px-2"
+          className="ms-auto h-7 px-2"
           title={
             isGeometryEditing
-              ? "Finish geometry editing to edit attributes"
+              ? t("attributeTable.editTitleFinishGeometry")
               : isReadOnlyVectorLayer
-                ? "Editing is not available for Add Vector Layer layers"
+                ? t("attributeTable.editTitleReadOnly")
                 : isEditing
                   ? hasEdits
-                    ? "Use Save or Cancel to finish editing"
-                    : "Exit edit mode"
+                    ? t("attributeTable.editTitleUseSaveCancel")
+                    : t("attributeTable.exitEditMode")
                   : isDuckDBLayer
-                    ? "Edit displayed DuckDB query attributes in memory"
-                    : "Edit attribute values"
+                    ? t("attributeTable.editTitleDuckdb")
+                    : t("attributeTable.editValues")
           }
           aria-label={
-            isEditing && !hasEdits ? "Exit edit mode" : "Edit attribute values"
+            isEditing && !hasEdits
+              ? t("attributeTable.exitEditMode")
+              : t("attributeTable.editValues")
           }
           disabled={
             !hasAttributeSource ||
@@ -1247,7 +1458,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           onClick={toggleEditing}
         >
           <Pencil className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Edit</span>
+          <span className="hidden sm:inline">{t("attributeTable.buttons.edit")}</span>
         </Button>
         <Button
           variant="default"
@@ -1255,29 +1466,31 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           className="h-7 px-2"
           title={
             hasInvalidDrafts
-              ? "Fix invalid JSON before saving"
-              : isDuckDBLayer
-                ? "Save in-memory DuckDB attribute edits"
-                : "Save attribute edits"
+              ? t("attributeTable.saveTitleInvalid")
+              : hasFormErrors
+                ? t("attributeTable.saveTitleFormErrors")
+                : isDuckDBLayer
+                  ? t("attributeTable.saveTitleDuckdb")
+                  : t("attributeTable.saveEdits")
           }
-          aria-label="Save attribute edits"
-          disabled={!isEditing || !hasEdits || hasInvalidDrafts}
+          aria-label={t("attributeTable.saveEdits")}
+          disabled={!isEditing || !hasEdits || hasInvalidDrafts || hasFormErrors}
           onClick={saveDrafts}
         >
           <Save className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Save</span>
+          <span className="hidden sm:inline">{t("common.save")}</span>
         </Button>
         {canManageColumns && !isEditing ? (
           <Button
             variant="outline"
             size="sm"
             className="h-7 px-2"
-            title="Add a new field"
-            aria-label="Add field"
+            title={t("attributeTable.addFieldTitle")}
+            aria-label={t("attributeTable.addField")}
             onClick={openAddColumn}
           >
             <Plus className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Add field</span>
+            <span className="hidden sm:inline">{t("attributeTable.addField")}</span>
           </Button>
         ) : null}
         {canManageColumns && !isEditing ? (
@@ -1285,12 +1498,12 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             variant="outline"
             size="sm"
             className="h-7 px-2"
-            title="Calculate field values from an expression"
-            aria-label="Field calculator"
+            title={t("attributeTable.fieldCalculatorTitle")}
+            aria-label={t("attributeTable.fieldCalculator")}
             onClick={openCalculator}
           >
             <Calculator className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Calculate</span>
+            <span className="hidden sm:inline">{t("attributeTable.buttons.calculate")}</span>
           </Button>
         ) : null}
         {canManageColumns && !isEditing ? (
@@ -1300,18 +1513,18 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 variant="outline"
                 size="sm"
                 className="h-7 px-2"
-                title="Show or hide fields"
-                aria-label="Manage fields"
+                title={t("attributeTable.manageFieldsTitle")}
+                aria-label={t("attributeTable.manageFields")}
               >
                 <Columns3 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Fields</span>
+                <span className="hidden sm:inline">{t("attributeTable.buttons.fields")}</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
-              <DropdownMenuLabel>Show fields</DropdownMenuLabel>
+              <DropdownMenuLabel>{t("attributeTable.showFields")}</DropdownMenuLabel>
               <DropdownMenuSeparator />
               {discoveredColumns.length === 0 ? (
-                <DropdownMenuItem disabled>No fields</DropdownMenuItem>
+                <DropdownMenuItem disabled>{t("attributeTable.noFields")}</DropdownMenuItem>
               ) : (
                 discoveredColumns.map((col) => (
                   <DropdownMenuCheckboxItem
@@ -1329,7 +1542,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={handleShowAllColumns}>
-                    Show all fields
+                    {t("attributeTable.showAllFields")}
                   </DropdownMenuItem>
                 </>
               ) : null}
@@ -1343,15 +1556,15 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             className="h-7 px-2"
             title={
               hasAttributeSource
-                ? "Explore all fields at a glance"
-                : "Column explorer requires a vector or DuckDB query layer"
+                ? t("attributeTable.columnExplorerTitle")
+                : t("attributeTable.columnExplorerTitleDisabled")
             }
-            aria-label="Column explorer"
+            aria-label={t("attributeTable.columnExplorer")}
             disabled={!hasAttributeSource}
             onClick={() => setExplorerOpen(true)}
           >
             <Telescope className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Explore</span>
+            <span className="hidden sm:inline">{t("attributeTable.buttons.explore")}</span>
           </Button>
         ) : null}
         {!isEditing ? (
@@ -1361,15 +1574,15 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             className="h-7 px-2"
             title={
               hasAttributeSource
-                ? "Field statistics summary"
-                : "Statistics require a vector or DuckDB query layer"
+                ? t("attributeTable.statisticsTitle")
+                : t("attributeTable.statisticsTitleDisabled")
             }
-            aria-label="Field statistics"
+            aria-label={t("attributeTable.statistics")}
             disabled={!hasAttributeSource}
             onClick={() => setStatsOpen(true)}
           >
             <Sigma className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Statistics</span>
+            <span className="hidden sm:inline">{t("attributeTable.buttons.statistics")}</span>
           </Button>
         ) : null}
         {!isEditing ? (
@@ -1379,15 +1592,15 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             className="h-7 px-2"
             title={
               hasAttributeSource
-                ? "Chart numeric fields"
-                : "Charts require a vector or DuckDB query layer"
+                ? t("attributeTable.chartsTitle")
+                : t("attributeTable.chartsTitleDisabled")
             }
-            aria-label="Charts"
+            aria-label={t("attributeTable.charts")}
             disabled={!hasAttributeSource}
             onClick={() => setChartOpen(true)}
           >
             <ChartColumn className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Charts</span>
+            <span className="hidden sm:inline">{t("attributeTable.charts")}</span>
           </Button>
         ) : null}
         {!isEditing ? (
@@ -1395,12 +1608,12 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             variant="outline"
             size="sm"
             className="h-7 px-2"
-            title="Open the dashboard to build chart widgets"
-            aria-label="Dashboard"
+            title={t("attributeTable.dashboardTitle")}
+            aria-label={t("attributeTable.dashboard")}
             onClick={() => setDashboardOpen(true)}
           >
             <LayoutDashboard className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Dashboard</span>
+            <span className="hidden sm:inline">{t("attributeTable.dashboard")}</span>
           </Button>
         ) : null}
         <DropdownMenu>
@@ -1411,14 +1624,14 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               className="h-7 px-2"
               title={
                 layer?.geojson
-                  ? "Export selected layer"
-                  : "Export requires a GeoJSON-backed layer"
+                  ? t("attributeTable.exportSelectedLayer")
+                  : t("attributeTable.exportTitleDisabled")
               }
-              aria-label="Export selected layer"
+              aria-label={t("attributeTable.exportSelectedLayer")}
               disabled={!layer?.geojson}
             >
               <Download className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Export</span>
+              <span className="hidden sm:inline">{t("attributeTable.buttons.export")}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -1444,8 +1657,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            title="Cancel attribute edits"
-            aria-label="Cancel attribute edits"
+            title={t("attributeTable.cancelEdits")}
+            aria-label={t("attributeTable.cancelEdits")}
             onClick={cancelEditing}
           >
             <RotateCcw className="h-4 w-4" />
@@ -1453,8 +1666,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
         ) : null}
         <Input
           className="h-7 min-w-36 flex-1 text-xs md:max-w-xs"
-          placeholder="Search attributes..."
-          aria-label="Search attributes"
+          placeholder={t("attributeTable.searchPlaceholder")}
+          aria-label={t("attributeTable.searchAria")}
           value={attributeFilter}
           onChange={(e) => setAttributeFilter(e.target.value)}
         />
@@ -1462,19 +1675,35 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           <input
             type="checkbox"
             checked={zoomToSelectedFeature}
-            onChange={(event) =>
-              setZoomToSelectedFeature(event.target.checked)
-            }
+            onChange={(event) => setZoomToSelectedFeature(event.target.checked)}
           />
-          Zoom to selection
+          {t("attributeTable.zoomToSelection")}
         </label>
+        {/* A native <select> (not the @geolibre/ui Select, which hardcodes h-9
+            and w-full) so it matches the h-7 toolbar and self-sizes to its
+            content instead of clipping the longest label. */}
+        <select
+          className="h-7 shrink-0 rounded-md border border-input bg-background px-2 text-xs shadow-xs transition-colors focus-visible:border-ring focus-visible:outline-none"
+          aria-label={t("attributeTable.featureViewAria")}
+          value={featureView}
+          onChange={(event) => setFeatureView(event.target.value as "all" | "selected")}
+        >
+          <option value="all">{t("attributeTable.showAllFeatures")}</option>
+          {/* Disabled when nothing is selected so the table can't be switched
+              to an empty "selected" view it wouldn't auto-recover from. */}
+          <option value="selected" disabled={selectedFeatureIds.length === 0}>
+            {t("attributeTable.showSelectedFeatures", {
+              count: selectedFeatureIds.length,
+            })}
+          </option>
+        </select>
         <Button
           variant="outline"
           size="icon"
           className="h-7 w-7"
-          title="Clear selected feature"
-          aria-label="Clear selected feature"
-          disabled={!selectedFeatureId}
+          title={t("attributeTable.clearSelectedFeature")}
+          aria-label={t("attributeTable.clearSelectedFeature")}
+          disabled={selectedFeatureIds.length === 0}
           onClick={() => selectFeature(null)}
         >
           <MousePointerSquareDashed className="h-3.5 w-3.5" />
@@ -1483,10 +1712,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
-          title={collapsed ? "Expand attribute table" : "Collapse attribute table"}
-          aria-label={
-            collapsed ? "Expand attribute table" : "Collapse attribute table"
-          }
+          title={collapsed ? t("attributeTable.expand") : t("attributeTable.collapse")}
+          aria-label={collapsed ? t("attributeTable.expand") : t("attributeTable.collapse")}
           onClick={() => setCollapsed((value) => !value)}
         >
           {collapsed ? (
@@ -1499,8 +1726,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           variant="ghost"
           size="icon"
           className="h-7 w-7"
-          title="Close attribute table"
-          aria-label="Close attribute table"
+          title={t("attributeTable.close")}
+          aria-label={t("attributeTable.close")}
           onClick={() => setAttributeTableOpen(false)}
         >
           <X className="h-4 w-4" />
@@ -1520,8 +1747,8 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
           {!hasAttributeSource ? (
             <p className="p-4 text-xs text-muted-foreground">
               {loadingVectorGeojson
-                ? "Loading layer attributes…"
-                : "Attribute table requires a vector or DuckDB query layer."}
+                ? t("attributeTable.loadingAttributes")
+                : t("attributeTable.requiresVectorLayer")}
             </p>
           ) : (
             <table
@@ -1536,9 +1763,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               </colgroup>
               <TableHeader className="sticky top-0 z-10 bg-card shadow-xs">
                 <TableRow>
-                  <TableHead className="bg-card">
-                    {sortableHeader("__featureId", "#")}
-                  </TableHead>
+                  <TableHead className="bg-card">{sortableHeader("__featureId", "#")}</TableHead>
                   {columns.map((col, index) => (
                     <TableHead key={col} className="bg-card">
                       {attributeColumnHeader(col, index)}
@@ -1554,16 +1779,21 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 ) : null}
                 {virtualRows.map((virtualRow) => {
                   const { featureId, properties } = sorted[virtualRow.index];
-                  const selected = selectedFeatureId === featureId;
+                  const selected = selectedIdSet.has(featureId);
                   return (
                     <TableRow
                       key={featureId}
                       data-index={virtualRow.index}
                       ref={rowVirtualizer.measureElement}
                       data-state={selected ? "selected" : undefined}
-                      className="cursor-pointer"
-                      onClick={() => {
-                        selectFeature(featureId);
+                      className="cursor-pointer select-none"
+                      // Shift-click would otherwise select the page text between
+                      // rows; suppress that so range picks stay clean.
+                      onMouseDown={(event) => {
+                        if (event.shiftKey) event.preventDefault();
+                      }}
+                      onClick={(event) => {
+                        handleRowClick(featureId, event);
                       }}
                     >
                       <TableCell>{featureId}</TableCell>
@@ -1571,39 +1801,100 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                         const value = properties[col];
                         const draft = drafts[featureId]?.[col];
                         const changed = draft !== undefined;
+                        const formError = formDraftErrors[featureId]?.[col];
                         const invalid =
-                          draft !== undefined &&
-                          isInvalidObjectDraft(draft, value);
+                          (draft !== undefined && isInvalidObjectDraft(draft, value)) ||
+                          formError !== undefined;
                         const inputClassName = invalid
                           ? "h-7 min-w-0 border-destructive bg-destructive/10 px-2 text-xs"
                           : changed
                             ? "h-7 min-w-0 border-primary/60 bg-primary/10 px-2 text-xs"
                             : "h-7 min-w-0 px-2 text-xs";
+                        const config = formFields.get(col);
+                        const current = draft ?? formatAttributeValue(value);
+                        const invalidTitle = invalid
+                          ? formError
+                            ? formErrorText(formError)
+                            : t("attributeTable.invalidJson")
+                          : undefined;
+                        const cellAria = t("attributeTable.editCellAria", {
+                          col,
+                          featureId,
+                        });
+                        const commitDraft = (next: string) =>
+                          updateCellDraft(featureId, col, next, value);
                         return (
                           <TableCell
                             key={col}
                             data-state={changed ? "edited" : undefined}
                             className="data-[state=edited]:bg-primary/10 data-[state=edited]:shadow-[inset_3px_0_0_hsl(var(--primary))]"
+                            title={
+                              virtualFieldColumns.has(col)
+                                ? t("attributeTable.virtualColumnTitle")
+                                : joinDerivedColumns.has(col)
+                                  ? t("attributeTable.joinedColumnTitle")
+                                  : undefined
+                            }
                           >
-                            {isEditing ? (
-                              <Input
-                                className={inputClassName}
-                                aria-invalid={invalid || undefined}
-                                title={
-                                  invalid ? "Invalid JSON" : undefined
-                                }
-                                aria-label={`Edit ${col} for feature ${featureId}`}
-                                value={draft ?? formatAttributeValue(value)}
-                                onClick={(event) => event.stopPropagation()}
-                                onChange={(event) =>
-                                  updateCellDraft(
-                                    featureId,
-                                    col,
-                                    event.target.value,
-                                    value,
-                                  )
-                                }
-                              />
+                            {isEditing && !derivedColumns.has(col) ? (
+                              config?.widget === "valueMap" && config.valueMap?.length ? (
+                                <Select
+                                  className={inputClassName}
+                                  aria-invalid={invalid || undefined}
+                                  title={invalidTitle}
+                                  aria-label={cellAria}
+                                  value={current}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => commitDraft(event.target.value)}
+                                >
+                                  <option value="">—</option>
+                                  {/* Keep an out-of-map current value listed so
+                                      the select shows it instead of silently
+                                      snapping to the first entry. */}
+                                  {current !== "" &&
+                                    !config.valueMap.some((entry) => entry.value === current) && (
+                                      <option value={current}>{current}</option>
+                                    )}
+                                  {config.valueMap.map((entry) => (
+                                    <option key={entry.value} value={entry.value}>
+                                      {entry.label ?? entry.value}
+                                    </option>
+                                  ))}
+                                </Select>
+                              ) : config?.widget === "checkbox" ? (
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4"
+                                  aria-invalid={invalid || undefined}
+                                  title={invalidTitle}
+                                  aria-label={cellAria}
+                                  checked={current === "true"}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) =>
+                                    commitDraft(event.target.checked ? "true" : "false")
+                                  }
+                                />
+                              ) : (
+                                <Input
+                                  className={inputClassName}
+                                  type={
+                                    config?.widget === "number" || config?.widget === "range"
+                                      ? "number"
+                                      : config?.widget === "date"
+                                        ? "date"
+                                        : "text"
+                                  }
+                                  min={config?.min}
+                                  max={config?.max}
+                                  step={config?.step}
+                                  aria-invalid={invalid || undefined}
+                                  title={invalidTitle}
+                                  aria-label={cellAria}
+                                  value={current}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={(event) => commitDraft(event.target.value)}
+                                />
+                              )
                             ) : (
                               formatAttributeValue(value)
                             )}
@@ -1615,10 +1906,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 })}
                 {paddingBottom > 0 ? (
                   <tr aria-hidden="true">
-                    <td
-                      colSpan={tableColumns.length}
-                      style={{ height: paddingBottom }}
-                    />
+                    <td colSpan={tableColumns.length} style={{ height: paddingBottom }} />
                   </tr>
                 ) : null}
               </TableBody>
@@ -1634,43 +1922,42 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete field</DialogTitle>
+            <DialogTitle>{t("attributeTable.deleteField")}</DialogTitle>
             <DialogDescription>
-              {`This permanently removes the field "${columnPendingDelete ?? ""}" from every feature in "${layer?.name ?? ""}". Styling or labels that reference it will be cleared. This cannot be undone.`}
+              {t("attributeTable.deleteFieldConfirm", {
+                field: columnPendingDelete ?? "",
+                layer: layer?.name ?? "",
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setColumnPendingDelete(null)}
-            >
-              Cancel
+            <Button variant="outline" onClick={() => setColumnPendingDelete(null)}>
+              {t("common.cancel")}
             </Button>
             <Button variant="destructive" onClick={confirmDeleteColumn}>
-              Delete field
+              {t("attributeTable.deleteField")}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-      <Dialog
-        open={addingColumn}
-        onOpenChange={(open: boolean) => setAddingColumn(open)}
-      >
+      <Dialog open={addingColumn} onOpenChange={(open: boolean) => setAddingColumn(open)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add field</DialogTitle>
+            <DialogTitle>{t("attributeTable.addField")}</DialogTitle>
             <DialogDescription>
-              {`Add a new field to every feature in "${layer?.name ?? ""}".`}
+              {t("attributeTable.addFieldDescription", {
+                layer: layer?.name ?? "",
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-1">
             <div className="grid gap-1.5">
-              <Label htmlFor="new-field-name">Field name</Label>
+              <Label htmlFor="new-field-name">{t("attributeTable.fieldName")}</Label>
               <Input
                 id="new-field-name"
                 autoFocus
                 value={newColumnName}
-                placeholder="e.g. category"
+                placeholder={t("attributeTable.newFieldPlaceholder")}
                 aria-invalid={newColumnCollides || undefined}
                 onChange={(event) => setNewColumnName(event.target.value)}
                 onKeyDown={(event) => {
@@ -1682,33 +1969,33 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               />
               {newColumnCollides ? (
                 <span className="text-xs text-destructive">
-                  A field named "{newColumnNameTrimmed}" already exists.
+                  {t("attributeTable.fieldExists", {
+                    name: newColumnNameTrimmed,
+                  })}
                 </span>
               ) : null}
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="new-field-type">Type</Label>
+              <Label htmlFor="new-field-type">{t("attributeTable.fieldType")}</Label>
               <Select
                 id="new-field-type"
                 value={newColumnType}
-                onChange={(event) =>
-                  changeNewColumnType(event.target.value as NewColumnType)
-                }
+                onChange={(event) => changeNewColumnType(event.target.value as NewColumnType)}
               >
-                <option value="text">Text</option>
-                <option value="number">Number</option>
-                <option value="boolean">Boolean</option>
+                <option value="text">{t("attributeTable.typeText")}</option>
+                <option value="number">{t("attributeTable.typeNumber")}</option>
+                <option value="boolean">{t("attributeTable.typeBoolean")}</option>
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="new-field-default">Default value</Label>
+              <Label htmlFor="new-field-default">{t("attributeTable.defaultValue")}</Label>
               {newColumnType === "boolean" ? (
                 <Select
                   id="new-field-default"
                   value={newColumnDefault}
                   onChange={(event) => setNewColumnDefault(event.target.value)}
                 >
-                  <option value="">(no default)</option>
+                  <option value="">{t("attributeTable.noDefault")}</option>
                   <option value="false">false</option>
                   <option value="true">true</option>
                 </Select>
@@ -1717,7 +2004,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                   id="new-field-default"
                   type={newColumnType === "number" ? "number" : "text"}
                   value={newColumnDefault}
-                  placeholder="Leave blank for empty"
+                  placeholder={t("attributeTable.defaultValuePlaceholder")}
                   onChange={(event) => setNewColumnDefault(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && canSubmitNewColumn) {
@@ -1730,16 +2017,16 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
             </div>
             {!canAddColumn ? (
               <span className="text-xs text-destructive">
-                This layer has no features to add a field to.
+                {t("attributeTable.noFeaturesForField")}
               </span>
             ) : null}
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setAddingColumn(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button disabled={!canSubmitNewColumn} onClick={confirmAddColumn}>
-              Add field
+              {t("attributeTable.addField")}
             </Button>
           </div>
         </DialogContent>
@@ -1753,37 +2040,34 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
       >
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Field calculator</DialogTitle>
+            <DialogTitle>{t("attributeTable.fieldCalculator")}</DialogTitle>
             <DialogDescription>
-              {`Compute values from a JavaScript expression and write them to a field in "${layer?.name ?? ""}".`}
+              {t("attributeTable.calcDescription", {
+                layer: layer?.name ?? "",
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-1">
             <div className="grid gap-1.5">
-              <Label htmlFor="calc-target">Target field</Label>
+              <Label htmlFor="calc-target">{t("attributeTable.targetField")}</Label>
               <div className="flex gap-2">
                 <Select
                   id="calc-target-mode"
                   className="w-40 shrink-0"
                   value={calcMode}
-                  onChange={(event) =>
-                    setCalcMode(event.target.value as "update" | "create")
-                  }
+                  onChange={(event) => setCalcMode(event.target.value as "update" | "create")}
                 >
-                  <option
-                    value="update"
-                    disabled={discoveredColumns.length === 0}
-                  >
-                    Update field
+                  <option value="update" disabled={discoveredColumns.length === 0}>
+                    {t("attributeTable.updateField")}
                   </option>
-                  <option value="create">Create field</option>
+                  <option value="create">{t("attributeTable.createField")}</option>
                 </Select>
                 {calcMode === "create" ? (
                   <Input
                     id="calc-target"
                     className="flex-1"
                     value={calcNewName}
-                    placeholder="New field name"
+                    placeholder={t("attributeTable.newFieldNamePlaceholder")}
                     aria-invalid={calcNameCollides || undefined}
                     onChange={(event) => setCalcNewName(event.target.value)}
                   />
@@ -1794,7 +2078,7 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                     value={calcTargetField}
                     onChange={(event) => setCalcTargetField(event.target.value)}
                   >
-                    {discoveredColumns.map((col) => (
+                    {calculatorTargetColumns.map((col) => (
                       <option key={col} value={col}>
                         {col}
                       </option>
@@ -1804,44 +2088,46 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               </div>
               {calcNameCollides ? (
                 <span className="text-xs text-destructive">
-                  A field named "{calcNewNameTrimmed}" already exists.
+                  {t("attributeTable.fieldExists", {
+                    name: calcNewNameTrimmed,
+                  })}
                 </span>
               ) : null}
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="calc-output-type">Output type</Label>
+              <Label htmlFor="calc-output-type">{t("attributeTable.outputType")}</Label>
               <Select
                 id="calc-output-type"
                 value={calcOutputType}
-                onChange={(event) =>
-                  setCalcOutputType(event.target.value as CalcOutputType)
-                }
+                onChange={(event) => setCalcOutputType(event.target.value as CalcOutputType)}
               >
-                <option value="auto">Auto (keep computed type)</option>
-                <option value="text">Text</option>
-                <option value="number">Number</option>
-                <option value="boolean">Boolean</option>
+                <option value="auto">{t("attributeTable.outputAuto")}</option>
+                <option value="text">{t("attributeTable.typeText")}</option>
+                <option value="number">{t("attributeTable.typeNumber")}</option>
+                <option value="boolean">{t("attributeTable.typeBoolean")}</option>
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="calc-expression">Expression</Label>
+              <Label htmlFor="calc-expression">{t("attributeTable.expression")}</Label>
               <Textarea
                 id="calc-expression"
                 ref={calcExpressionRef}
                 className="min-h-20 font-mono text-xs"
                 value={calcExpression}
-                placeholder='e.g. pop / area, or upper(name), or pop > 100 ? "big" : "small"'
+                placeholder={t("attributeTable.calcExpressionPlaceholder")}
                 onChange={(event) => setCalcExpression(event.target.value)}
               />
               {discoveredColumns.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-xs text-muted-foreground">Fields:</span>
+                  <span className="text-xs text-muted-foreground">
+                    {t("attributeTable.fieldsLabel")}
+                  </span>
                   {discoveredColumns.map((col) => (
                     <button
                       key={col}
                       type="button"
                       className="rounded border border-input bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] hover:bg-muted"
-                      title={`Insert ${col}`}
+                      title={t("attributeTable.insertField", { name: col })}
                       onClick={() => insertExpressionSnippet(fieldReference(col))}
                     >
                       {col}
@@ -1851,14 +2137,14 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
               ) : null}
               <div className="flex flex-wrap items-center gap-1">
                 <span className="text-xs text-muted-foreground">
-                  Functions:
+                  {t("attributeTable.functionsLabel")}
                 </span>
                 {Object.keys(EXPRESSION_HELPERS).map((fn) => (
                   <button
                     key={fn}
                     type="button"
                     className="rounded border border-input bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] hover:bg-muted"
-                    title={`Insert ${fn}()`}
+                    title={t("attributeTable.insertFunction", { name: fn })}
                     onClick={() =>
                       // Land the caret between the parens so the user can type
                       // the argument straight away.
@@ -1869,18 +2155,57 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                   </button>
                 ))}
               </div>
+              {calcAvailableMetrics.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">
+                    {t("attributeTable.geomMeasureLabel")}
+                  </span>
+                  <Select
+                    id="calc-geom-metric"
+                    className="h-7 w-28 py-0 text-xs"
+                    value={calcEffectiveMetric}
+                    onChange={(event) => setCalcGeomMetric(event.target.value as GeometryMetric)}
+                  >
+                    {calcAvailableMetrics.map((metric) => (
+                      <option key={metric} value={metric}>
+                        {t(`attributeTable.geomMetric.${metric}`)}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    id="calc-geom-unit"
+                    className="h-7 w-20 py-0 text-xs"
+                    value={calcEffectiveUnit}
+                    onChange={(event) => setCalcGeomUnit(event.target.value)}
+                  >
+                    {calcGeomUnitOptions.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {UNIT_SYMBOLS[unit]}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    onClick={insertGeometrySnippet}
+                  >
+                    {t("attributeTable.geomInsert")}
+                  </Button>
+                </div>
+              ) : null}
             </div>
             {calcPreview.kind === "syntax" ? (
-              <span className="text-xs text-destructive">
-                {calcPreview.message}
-              </span>
+              <span className="text-xs text-destructive">{calcPreview.message}</span>
             ) : calcPreview.kind === "runtime" ? (
               <span className="text-xs text-amber-600 dark:text-amber-500">
-                {`Sample row errored (other rows may still compute): ${calcPreview.message}`}
+                {t("attributeTable.sampleRowErrored", {
+                  message: calcPreview.message,
+                })}
               </span>
             ) : calcPreview.kind === "ok" ? (
               <span className="truncate text-xs text-muted-foreground">
-                Preview:{" "}
+                {t("attributeTable.preview")}{" "}
                 <span className="font-mono text-foreground">
                   {formatAttributeValue(calcPreview.value)}
                 </span>
@@ -1893,18 +2218,16 @@ export function AttributeTable({ mapControllerRef }: AttributeTableProps) {
                 disabled={!calcHasSelection}
                 onChange={(event) => setCalcSelectedOnly(event.target.checked)}
               />
-              Only update the selected feature
+              {t("attributeTable.onlySelectedFeature")}
             </label>
-            {calcError ? (
-              <span className="text-xs text-destructive">{calcError}</span>
-            ) : null}
+            {calcError ? <span className="text-xs text-destructive">{calcError}</span> : null}
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCalcOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button disabled={!calcCanSubmit} onClick={confirmCalculate}>
-              Calculate
+              {t("attributeTable.buttons.calculate")}
             </Button>
           </div>
         </DialogContent>

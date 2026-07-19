@@ -2,23 +2,22 @@ import { Button, Input, Label, Select } from "@geolibre/ui";
 import { ListTree, Loader2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { DEFAULT_WMS_ENDPOINT, DEFAULT_WMS_LAYERS } from "../constants";
+import { buildWmsLayer } from "../apply-service";
 import {
-  createBaseLayer,
-  createWmsTileUrl,
-  errorMessage,
+  DEFAULT_WMS_ENDPOINT,
+  DEFAULT_WMS_LAYERS,
+  GEBCO_WMS_ENDPOINT,
+  GEBCO_WMS_LAYERS,
+} from "../constants";
+import {
   fetchWmsCapabilities,
   normalizeWmsVersion,
-  stripOgcOperationParams,
+  serviceRequestErrorMessage,
   wmsVersionFromEndpoint,
   type WmsLayerOption,
 } from "../helpers";
 import { ServiceLibrarySection } from "../ServiceLibrarySection";
-import {
-  serviceFieldBoolean,
-  serviceFieldString,
-  type ServiceFields,
-} from "../service-library";
+import { serviceFieldBoolean, serviceFieldString, type ServiceFields } from "../service-library";
 import { AddDataSourceForm, SampleDataSelect, useAddDataSource } from "../shared";
 
 /**
@@ -46,9 +45,7 @@ export function WmsSource() {
   const [wmsLayers, setWmsLayers] = useState(wmsFormCache?.layers ?? "");
   const [wmsStyles, setWmsStyles] = useState(wmsFormCache?.styles ?? "");
   const [wmsFormat, setWmsFormat] = useState(wmsFormCache?.format ?? "image/png");
-  const [wmsTransparent, setWmsTransparent] = useState(
-    wmsFormCache?.transparent ?? true,
-  );
+  const [wmsTransparent, setWmsTransparent] = useState(wmsFormCache?.transparent ?? true);
   const [wmsTileSize, setWmsTileSize] = useState(wmsFormCache?.tileSize ?? "256");
   const [wmsVersion, setWmsVersion] = useState(wmsFormCache?.version ?? "1.1.1");
   // True while the version has an explicit source — the selector, a pasted
@@ -56,17 +53,13 @@ export function WmsSource() {
   // auto-detection only fills the version in when no explicit source exists.
   // Mirrored in a ref so the async retrieve handler reads the value current at
   // response time, not the one captured when the button was clicked.
-  const [versionTouched, setVersionTouched] = useState(
-    wmsFormCache?.versionTouched ?? false,
-  );
+  const [versionTouched, setVersionTouched] = useState(wmsFormCache?.versionTouched ?? false);
   const versionTouchedRef = useRef(versionTouched);
   const markVersionTouched = (touched: boolean) => {
     versionTouchedRef.current = touched;
     setVersionTouched(touched);
   };
-  const [layerOptions, setLayerOptions] = useState<WmsLayerOption[]>(
-    wmsFormCache?.options ?? [],
-  );
+  const [layerOptions, setLayerOptions] = useState<WmsLayerOption[]>(wmsFormCache?.options ?? []);
   const [isRetrieving, setIsRetrieving] = useState(false);
   const [retrieveError, setRetrieveError] = useState<string | null>(null);
   const layerListId = useId();
@@ -128,8 +121,7 @@ export function WmsSource() {
     const controller = new AbortController();
     retrieveAbortRef.current = controller;
     const token = ++retrieveTokenRef.current;
-    const isStale = () =>
-      token !== retrieveTokenRef.current || controller.signal.aborted;
+    const isStale = () => token !== retrieveTokenRef.current || controller.signal.aborted;
     setIsRetrieving(true);
     setRetrieveError(null);
     try {
@@ -158,7 +150,7 @@ export function WmsSource() {
     } catch (error) {
       if (isStale()) return;
       setLayerOptions([]);
-      setRetrieveError(errorMessage(error, t("addData.wms.retrieveError")));
+      setRetrieveError(serviceRequestErrorMessage(error, t, t("addData.wms.retrieveError")));
     } finally {
       if (token === retrieveTokenRef.current) setIsRetrieving(false);
     }
@@ -206,37 +198,20 @@ export function WmsSource() {
     if (!wmsLayers.trim()) {
       throw new Error(t("addData.wms.errorLayers"));
     }
-    const tileSize = Number(wmsTileSize) || 256;
-    // Strip any leftover operation params (a pasted GetCapabilities URL) so the
-    // GetMap request is not built with a conflicting duplicate REQUEST.
-    const endpoint = stripOgcOperationParams(wmsEndpoint.trim(), "WMS");
-    const version = normalizeWmsVersion(wmsVersion);
-    const tileUrl = createWmsTileUrl({
-      endpoint,
-      layers: wmsLayers.trim(),
-      styles: wmsStyles.trim(),
-      format: wmsFormat,
-      transparent: wmsTransparent,
-      tileSize,
-      version,
-    });
+    // buildWmsLayer strips any leftover operation params (a pasted
+    // GetCapabilities URL), normalizes the version, and credits known keyless
+    // services (e.g. GEBCO) in the map's attribution control.
     source.addAndClose(
-      createBaseLayer(
+      buildWmsLayer({
         name,
-        "wms",
-        {
-          type: "raster",
-          tiles: [tileUrl],
-          tileSize,
-          url: endpoint,
-          layers: wmsLayers.trim(),
-          styles: wmsStyles.trim(),
-          format: wmsFormat,
-          transparent: wmsTransparent,
-          version,
-        },
-        { service: "wms" },
-      ),
+        endpoint: wmsEndpoint,
+        layers: wmsLayers,
+        styles: wmsStyles,
+        format: wmsFormat,
+        transparent: wmsTransparent,
+        tileSize: wmsTileSize,
+        version: wmsVersion,
+      }),
     );
   });
 
@@ -284,15 +259,11 @@ export function WmsSource() {
                 // must not clobber a manual selection.
                 const detected = wmsVersionFromEndpoint(value);
                 const serviceChanged =
-                  value.trim().split(/[?#]/)[0] !==
-                  previous.trim().split(/[?#]/)[0];
+                  value.trim().split(/[?#]/)[0] !== previous.trim().split(/[?#]/)[0];
                 if (serviceChanged) {
                   setWmsVersion(detected ?? "1.1.1");
                   markVersionTouched(detected != null);
-                } else if (
-                  detected &&
-                  detected !== wmsVersionFromEndpoint(previous)
-                ) {
+                } else if (detected && detected !== wmsVersionFromEndpoint(previous)) {
                   setWmsVersion(detected);
                   markVersionTouched(true);
                 }
@@ -315,23 +286,17 @@ export function WmsSource() {
               className="shrink-0"
             >
               {isRetrieving ? (
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="me-2 h-3.5 w-3.5 animate-spin" />
               ) : (
-                <ListTree className="mr-2 h-3.5 w-3.5" />
+                <ListTree className="me-2 h-3.5 w-3.5" />
               )}
-              {isRetrieving
-                ? t("addData.wms.retrieving")
-                : t("addData.wms.retrieveLayers")}
+              {isRetrieving ? t("addData.wms.retrieving") : t("addData.wms.retrieveLayers")}
             </Button>
           </div>
-          {retrieveError ? (
-            <p className="text-xs text-destructive">{retrieveError}</p>
-          ) : null}
+          {retrieveError ? <p className="text-xs text-destructive">{retrieveError}</p> : null}
           {layerOptions.length > 0 ? (
             <div className="space-y-1.5">
-              <Label htmlFor={layerListId}>
-                {t("addData.wms.retrievedLayers")}
-              </Label>
+              <Label htmlFor={layerListId}>{t("addData.wms.retrievedLayers")}</Label>
               {/* A picker that lists every retrieved layer and fills the Layers
                   field below on select. Its own value stays empty (an action
                   menu, like Load sample data), so it always shows the full list
@@ -426,6 +391,14 @@ export function WmsSource() {
             {
               label: t("addData.wms.sampleLabel"),
               value: { endpoint: DEFAULT_WMS_ENDPOINT, layers: DEFAULT_WMS_LAYERS },
+            },
+            {
+              label: t("addData.wms.sampleLabelGebco"),
+              value: {
+                endpoint: GEBCO_WMS_ENDPOINT,
+                layers: GEBCO_WMS_LAYERS,
+                version: "1.3.0",
+              },
             },
           ]}
           onSelect={applyFields}

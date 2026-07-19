@@ -98,12 +98,8 @@ describe("right-panel registry", () => {
 
   it("fires onClose for the displaced panel when a new panel takes over", () => {
     const calls: string[] = [];
-    registerRightPanel(
-      testPanel({ id: "a", title: "A", onClose: () => calls.push("a:close") }),
-    );
-    registerRightPanel(
-      testPanel({ id: "b", title: "B", onOpen: () => calls.push("b:open") }),
-    );
+    registerRightPanel(testPanel({ id: "a", title: "A", onClose: () => calls.push("a:close") }));
+    registerRightPanel(testPanel({ id: "b", title: "B", onOpen: () => calls.push("b:open") }));
     openRightPanel("a");
     openRightPanel("b");
     assert.equal(getActiveRightPanel(), "b");
@@ -112,9 +108,7 @@ describe("right-panel registry", () => {
 
   it("defaults to right-of-style and honors a declared dock", () => {
     registerRightPanel(testPanel({ id: "r", title: "R" }));
-    registerRightPanel(
-      testPanel({ id: "l", title: "L", dock: "left-of-layers" }),
-    );
+    registerRightPanel(testPanel({ id: "l", title: "L", dock: "left-of-layers" }));
     openRightPanel("r");
     assert.equal(getActiveRightPanelDock(), "right-of-style");
     assert.equal(getRightPanelSnapshot().dock, "right-of-style");
@@ -242,9 +236,7 @@ describe("right-panel registry", () => {
         render: () => undefined,
       }),
     );
-    assert.throws(() =>
-      registerRightPanel({ id: "x", title: "", render: () => undefined }),
-    );
+    assert.throws(() => registerRightPanel({ id: "x", title: "", render: () => undefined }));
     assert.throws(() =>
       registerRightPanel({
         id: "x",
@@ -276,5 +268,171 @@ describe("right-panel registry", () => {
     assert.equal(getActiveRightPanel(), null);
     assert.deepEqual(calls, ["close"]);
     unsubscribe();
+  });
+
+  it("resolves a getter title live without mutating the registration object", () => {
+    // A getter title must re-localize on language change without the host
+    // clobbering the function on the caller's own registration object.
+    let current = "Workbench (en)";
+    const panel = testPanel({ title: () => current });
+    registerRightPanel(panel);
+
+    assert.equal(getRightPanel("workbench")?.title, "Workbench (en)");
+    assert.equal(typeof panel.title, "function");
+
+    current = "Workbench (zh)";
+    assert.equal(getRightPanel("workbench")?.title, "Workbench (zh)");
+    assert.equal(typeof panel.title, "function");
+  });
+
+  it("re-registering the same object keeps a getter title reactive", () => {
+    // Regression: an earlier build resolved panel.title in place, turning the
+    // function into a static string, so a re-registration of the same object
+    // (a supported pattern) froze the title on its first value.
+    let current = "First";
+    const panel = testPanel({ title: () => current });
+    registerRightPanel(panel);
+    assert.equal(getRightPanel("workbench")?.title, "First");
+
+    registerRightPanel(panel);
+    assert.equal(typeof panel.title, "function");
+
+    current = "Second";
+    assert.equal(getRightPanel("workbench")?.title, "Second");
+  });
+
+  it("listRightPanels resolves titles to strings and does not leak getters", () => {
+    // getRightPanel resolves titles; listRightPanels must mirror it so every
+    // `.title` in the returned list is a string, not a getter function.
+    let current = "Workbench (en)";
+    registerRightPanel(testPanel({ title: () => current }));
+
+    const listed = listRightPanels();
+    assert.equal(listed.length, 1);
+    assert.equal(typeof listed[0].title, "string");
+    assert.equal(listed[0].title, "Workbench (en)");
+
+    // Resolving must be live and must not mutate the original registration.
+    current = "Workbench (zh)";
+    assert.equal(listRightPanels()[0].title, "Workbench (zh)");
+
+    // Multiple panels all resolve, including plain-string titles.
+    registerRightPanel(testPanel({ id: "extra", title: "Extra" }));
+    const byId = Object.fromEntries(listRightPanels().map((p) => [p.id, p.title]));
+    assert.deepEqual(byId, { workbench: "Workbench (zh)", extra: "Extra" });
+  });
+
+  it("falls back to the panel id when a getter title throws, for both accessors", () => {
+    // A throwing title getter must not propagate into the React render tree
+    // (getRightPanel/listRightPanels are called directly in component bodies).
+    // It degrades to the panel id and logs the error, mirroring runHook/render.
+    registerRightPanel(
+      testPanel({
+        title: () => {
+          throw new Error("bad i18n key");
+        },
+      }),
+    );
+
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(String(args[0]));
+    };
+    try {
+      // getRightPanel must not throw and must fall back to the panel id.
+      const byId = getRightPanel("workbench");
+      assert.equal(byId?.title, "workbench");
+      // listRightPanels must mirror that behavior.
+      const listed = listRightPanels();
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].title, "workbench");
+    } finally {
+      console.error = original;
+    }
+
+    // The throw is logged once per panel id even though both accessors ran;
+    // repeated unmemoized reads don't spam the console.
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /Right panel "workbench" title resolver threw/);
+  });
+
+  it("falls back to the panel id when a getter title returns an empty string, for both accessors", () => {
+    // A resolver that returns "" (e.g. a mistyped i18n key whose value is
+    // missing and the library falls back to empty) would otherwise render as a
+    // blank header with no signal. Degrade to the id and warn, mirroring the
+    // throwing-getter fallback above.
+    registerRightPanel(testPanel({ title: () => "" }));
+
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(String(args[0]));
+    };
+    try {
+      // getRightPanel must fall back to the panel id (not "").
+      const byId = getRightPanel("workbench");
+      assert.equal(byId?.title, "workbench");
+      // listRightPanels must mirror that behavior.
+      const listed = listRightPanels();
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].title, "workbench");
+    } finally {
+      console.warn = original;
+    }
+
+    // The empty result is logged once per panel id even though both
+    // accessors ran.
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /returned an empty string/);
+  });
+
+  it("dedups title warnings across repeated reads and re-enables on re-register", () => {
+    // getRightPanel/listRightPanels are called unmemoized on every render and
+    // PluginRightPanel mounts up to 4x for the dock slots, so a throwing getter
+    // must log once per panel id (not once per read). Re-registering the panel
+    // clears the dedup so a later regression surfaces again.
+    registerRightPanel(
+      testPanel({
+        title: () => {
+          throw new Error("bad i18n key");
+        },
+      }),
+    );
+
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(String(args[0]));
+    };
+    try {
+      // Many reads across both accessors produce exactly one log.
+      for (let i = 0; i < 5; i++) {
+        getRightPanel("workbench");
+        listRightPanels();
+      }
+      assert.equal(errors.length, 1);
+    } finally {
+      console.error = original;
+    }
+
+    // Re-registering clears dedup; a still-throwing getter logs once more.
+    registerRightPanel(
+      testPanel({
+        title: () => {
+          throw new Error("bad i18n key");
+        },
+      }),
+    );
+    const errors2: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors2.push(String(args[0]));
+    };
+    try {
+      getRightPanel("workbench");
+      assert.equal(errors2.length, 1);
+    } finally {
+      console.error = original;
+    }
   });
 });

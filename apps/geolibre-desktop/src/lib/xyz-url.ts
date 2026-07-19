@@ -1,6 +1,7 @@
 import type { GeoLibreLayer, GeoLibreProject } from "@geolibre/core";
 import { invoke } from "@tauri-apps/api/core";
 import { addProtocol, type RequestParameters } from "maplibre-gl";
+import { resolveUrlRedirect } from "./native-http";
 import { isTauri } from "./tauri-io";
 
 const XYZ_TILE_PROTOCOL = "geolibre-xyz";
@@ -25,17 +26,13 @@ export function normalizeTileUrlTemplate(url: string): string {
 }
 
 export function hasXyzTilePlaceholders(url: string): boolean {
-  return ["x", "y", "z"].every((placeholder) =>
-    url.includes(`{${placeholder}}`),
-  );
+  return ["x", "y", "z"].every((placeholder) => url.includes(`{${placeholder}}`));
 }
 
 export function createXyzTileUrlTemplate(url: string): ResolvedXyzTileUrl {
   const originalUrl = normalizeTileUrlTemplate(url.trim());
   if (!hasXyzTilePlaceholders(originalUrl)) {
-    throw new Error(
-      "Enter an XYZ tile URL template with {z}, {x}, and {y} placeholders.",
-    );
+    throw new Error("Enter an XYZ tile URL template with {z}, {x}, and {y} placeholders.");
   }
 
   return {
@@ -60,13 +57,9 @@ export async function resolveXyzTileUrlTemplate(
     };
   }
 
-  const resolvedUrl = normalizeTileUrlTemplate(
-    await resolveShortXyzUrl(originalUrl, signal),
-  );
+  const resolvedUrl = normalizeTileUrlTemplate(await resolveShortXyzUrl(originalUrl, signal));
   if (!hasXyzTilePlaceholders(resolvedUrl)) {
-    throw new Error(
-      "Enter an XYZ tile URL template with {z}, {x}, and {y} placeholders.",
-    );
+    throw new Error("Enter an XYZ tile URL template with {z}, {x}, and {y} placeholders.");
   }
 
   return {
@@ -82,15 +75,17 @@ export function registerXyzTileProtocol(): void {
 
   addProtocol(XYZ_TILE_PROTOCOL, async (request) => {
     const url = parseXyzTileRequest(request);
+    // This handler runs once per tile, so — unlike the one-shot native calls
+    // routed through native-http — it deliberately calls `invoke` directly and
+    // is NOT recorded in diagnostics: a fast pan over a tile server's coverage
+    // edge returns 404s in bulk, and recording each would re-render the panel
+    // per tile and evict more relevant entries from the 500-record ring buffer.
     const bytes = await invoke<number[] | Uint8Array>("fetch_url_bytes", {
       url,
     });
     const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     return {
-      data: array.buffer.slice(
-        array.byteOffset,
-        array.byteOffset + array.byteLength,
-      ),
+      data: array.buffer.slice(array.byteOffset, array.byteOffset + array.byteLength),
     };
   });
   protocolRegistered = true;
@@ -125,8 +120,7 @@ async function resolveProjectXyzLayer(
   }
 
   const hasShortUrlMetadata =
-    typeof layer.metadata.originalUrl === "string" &&
-    layer.metadata.originalUrl.trim().length > 0;
+    typeof layer.metadata.originalUrl === "string" && layer.metadata.originalUrl.trim().length > 0;
   const normalizedUrl = normalizeTileUrlTemplate(url);
   const tileUrl =
     hasShortUrlMetadata || !hasXyzTilePlaceholders(normalizedUrl)
@@ -142,9 +136,7 @@ async function resolveProjectXyzLayer(
     metadata: {
       ...layer.metadata,
       originalUrl:
-        tileUrl.redirected || layer.metadata.originalUrl
-          ? tileUrl.originalUrl
-          : undefined,
+        tileUrl.redirected || layer.metadata.originalUrl ? tileUrl.originalUrl : undefined,
       resolvedUrl: tileUrl.redirected ? tileUrl.url : undefined,
       sourceKind: layer.metadata.sourceKind ?? "xyz-url",
     },
@@ -199,10 +191,7 @@ function isHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
-async function resolveShortXyzUrl(
-  url: string,
-  signal?: AbortSignal,
-): Promise<string> {
+async function resolveShortXyzUrl(url: string, signal?: AbortSignal): Promise<string> {
   if (!isHttpUrl(url)) return url;
 
   if (isTauri()) {
@@ -213,16 +202,13 @@ async function resolveShortXyzUrl(
       console.warn("Falling back to desktop URL resolver", error);
     }
 
-    return invoke<string>("resolve_url_redirect", { url });
+    return resolveUrlRedirect(url, { context: "XYZ URL resolve" });
   }
 
   return resolveShortXyzUrlWithFetch(url, signal);
 }
 
-async function resolveShortXyzUrlWithFetch(
-  url: string,
-  signal?: AbortSignal,
-): Promise<string> {
+async function resolveShortXyzUrlWithFetch(url: string, signal?: AbortSignal): Promise<string> {
   const response = await fetch(url, {
     headers: { Accept: "application/json, text/plain;q=0.9, */*;q=0.8" },
     redirect: "follow",
@@ -246,9 +232,7 @@ function isAbortError(error: unknown): boolean {
 
 function urlFromResolverResponse(response: Response): string | null {
   const resolvedUrl = normalizeTileUrlTemplate(response.url);
-  return resolvedUrl && hasXyzTilePlaceholders(resolvedUrl)
-    ? resolvedUrl
-    : null;
+  return resolvedUrl && hasXyzTilePlaceholders(resolvedUrl) ? resolvedUrl : null;
 }
 
 async function urlFromResolverBody(response: Response): Promise<string | null> {
@@ -283,11 +267,7 @@ function urlFromJsonValue(value: unknown): string | null {
   }
 
   const tiles = record.tiles;
-  if (
-    Array.isArray(tiles) &&
-    typeof tiles[0] === "string" &&
-    isHttpUrl(tiles[0])
-  ) {
+  if (Array.isArray(tiles) && typeof tiles[0] === "string" && isHttpUrl(tiles[0])) {
     return tiles[0];
   }
 

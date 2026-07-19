@@ -42,24 +42,16 @@ export function CollaborationParticipantRow({
   ) : (
     <Eye className="h-3 w-3" aria-hidden="true" />
   );
-  const permLabel = editable
-    ? t("collaborate.canEdit")
-    : t("collaborate.viewOnly");
+  const permLabel = editable ? t("collaborate.canEdit") : t("collaborate.viewOnly");
 
   return (
-    <li
-      className={`flex items-center gap-2 ${compact ? "text-xs" : "text-sm"}`}
-    >
+    <li className={`flex items-center gap-2 ${compact ? "text-xs" : "text-sm"}`}>
       <span
         className={`${compact ? "h-2.5 w-2.5" : "h-3 w-3"} shrink-0 rounded-full`}
         style={{ backgroundColor: p.color }}
       />
       <span className="truncate">{p.displayName}</span>
-      {isSelf && (
-        <span className="text-xs text-muted-foreground">
-          ({t("collaborate.you")})
-        </span>
-      )}
+      {isSelf && <span className="text-xs text-muted-foreground">({t("collaborate.you")})</span>}
       {isHostRow && (
         <span
           className={`rounded bg-muted py-0.5 ${compact ? "px-1 text-[10px]" : "px-1.5 text-xs"}`}
@@ -76,12 +68,8 @@ export function CollaborationParticipantRow({
             // assistive tech, rather than a momentary press (aria-pressed).
             role="switch"
             aria-checked={editable}
-            title={
-              editable
-                ? t("collaborate.setViewOnly")
-                : t("collaborate.allowEdit")
-            }
-            className={`ml-auto flex shrink-0 items-center gap-1 rounded border py-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground ${compact ? "px-1 text-[10px]" : "px-1.5 text-xs"}`}
+            title={editable ? t("collaborate.setViewOnly") : t("collaborate.allowEdit")}
+            className={`ms-auto flex shrink-0 items-center gap-1 rounded border py-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground ${compact ? "px-1 text-[10px]" : "px-1.5 text-xs"}`}
           >
             {permIcon}
             {permLabel}
@@ -89,7 +77,7 @@ export function CollaborationParticipantRow({
         ) : (
           // Non-host viewers still see each guest's current permission.
           <span
-            className={`ml-auto flex shrink-0 items-center gap-1 text-muted-foreground ${compact ? "text-[10px]" : "text-xs"}`}
+            className={`ms-auto flex shrink-0 items-center gap-1 text-muted-foreground ${compact ? "text-[10px]" : "text-xs"}`}
           >
             {permIcon}
             {permLabel}

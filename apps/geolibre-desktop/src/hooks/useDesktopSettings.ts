@@ -41,6 +41,29 @@ export interface DesktopSettings {
    */
   shareToken: string;
   /**
+   * Cesium Ion access token for the 3D-globe view (Cesium World Imagery +
+   * Terrain need one). Stored here — device-local localStorage, not the shared
+   * project file — so a personal credential is never serialized into a
+   * `.geolibre.json` a user shares. Projected into `VITE_CESIUM_TOKEN` at
+   * runtime by `useRuntimeEnvironmentVariables`, and resolved through
+   * `getCesiumIonToken`, so it overrides the build-time token with no rebuild.
+   * Same "token in localStorage" trade-off as {@link shareToken}.
+   */
+  cesiumIonToken: string;
+  /**
+   * AI Assistant provider credentials (Settings → AI Providers), keyed by the
+   * runtime environment variable each field maps to (e.g. `ANTHROPIC_API_KEY`,
+   * `OPENAI_API_KEY`, `OLLAMA_BASE_URL`). Stored here — device-local
+   * localStorage, not the shared project file — so a personal API key survives
+   * app restarts (the desktop webview persists localStorage across launches)
+   * yet is never serialized into a `.geolibre.json` a user shares. Projected
+   * into `window.__GEOLIBRE_RUNTIME_ENV__` at runtime by
+   * `useRuntimeEnvironmentVariables`, below any explicit project Environment
+   * variable of the same name. Same "secret in localStorage" trade-off as
+   * {@link cesiumIonToken}.
+   */
+  aiProviderEnv: Record<string, string>;
+  /**
    * Appearance preferences (the accent color scheme). The light/dark mode is
    * handled separately by `useThemeMode` (it tracks the OS / embed preference).
    */
@@ -127,9 +150,13 @@ export const DEFAULT_DESKTOP_LAYOUT_SETTINGS: DesktopLayoutSettings = {
 };
 
 export const DEFAULT_UI_PROFILE_SETTINGS: UiProfileSettings = {
+  // Ship the Advanced interface by default (`enabled: false` shows every item,
+  // which `activeInterfaceProfile` reports as "advanced") and skip the
+  // first-launch welcome dialog (`onboarded: true`). Users can still switch to a
+  // curated preset from the Settings dialog.
   enabled: false,
   level: null,
-  onboarded: false,
+  onboarded: true,
   locked: false,
   hiddenDataSources: [],
   hiddenPlugins: [],
@@ -153,6 +180,8 @@ const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   layout: DEFAULT_DESKTOP_LAYOUT_SETTINGS,
   pluginManifestUrls: [],
   shareToken: "",
+  cesiumIonToken: "",
+  aiProviderEnv: {},
   theme: DEFAULT_THEME_SETTINGS,
   uiProfile: DEFAULT_UI_PROFILE_SETTINGS,
   updates: DEFAULT_UPDATE_SETTINGS,
@@ -165,30 +194,46 @@ export const EXPERIENCE_LEVELS: readonly ExperienceLevel[] = [
   "advanced",
 ];
 
-function normalizeDesktopSettings(settings: unknown): DesktopSettings {
+export function normalizeDesktopSettings(settings: unknown): DesktopSettings {
   if (!settings || typeof settings !== "object") {
     return DEFAULT_DESKTOP_SETTINGS;
   }
 
   const candidate = settings as Partial<DesktopSettings>;
   return {
-    additionalPluginDirectories: normalizeStringList(
-      candidate.additionalPluginDirectories,
-    ),
-    language:
-      typeof candidate.language === "string" ? candidate.language.trim() : "",
+    additionalPluginDirectories: normalizeStringList(candidate.additionalPluginDirectories),
+    language: typeof candidate.language === "string" ? candidate.language.trim() : "",
     layout: normalizeDesktopLayoutSettings(candidate.layout),
     // Apply the same scheme rule as project-file loading so stale or edited
     // localStorage values cannot smuggle in disallowed URL schemes.
     pluginManifestUrls: normalizeStringList(candidate.pluginManifestUrls).filter(
       isAllowedPluginManifestUrl,
     ),
-    shareToken:
-      typeof candidate.shareToken === "string" ? candidate.shareToken.trim() : "",
+    shareToken: typeof candidate.shareToken === "string" ? candidate.shareToken.trim() : "",
+    cesiumIonToken:
+      typeof candidate.cesiumIonToken === "string" ? candidate.cesiumIonToken.trim() : "",
+    aiProviderEnv: normalizeEnvRecord(candidate.aiProviderEnv),
     theme: normalizeThemeSettings(candidate.theme),
     uiProfile: normalizeUiProfileSettings(candidate.uiProfile),
     updates: normalizeUpdateSettings(candidate.updates),
   };
+}
+
+/**
+ * Coerce a persisted (or tampered) value into a clean env-var record: entries
+ * with a non-empty trimmed name mapped to a non-empty string value. Blank keys,
+ * blank values, and non-string values are dropped so a malformed localStorage
+ * entry cannot inject bad values into the runtime environment and the persisted
+ * blob never accrues empty leftovers (every consumer treats a blank as unset).
+ */
+function normalizeEnvRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const name = key.trim();
+    if (name && typeof entry === "string" && entry) result[name] = entry;
+  }
+  return result;
 }
 
 function normalizeThemeSettings(theme: unknown): ThemeSettings {
@@ -201,9 +246,7 @@ function normalizeThemeSettings(theme: unknown): ThemeSettings {
   // arbitrary string into the inline custom-color tokens.
   const candidate = theme as Partial<ThemeSettings>;
   return {
-    scheme: isThemeScheme(candidate.scheme)
-      ? candidate.scheme
-      : DEFAULT_THEME_SETTINGS.scheme,
+    scheme: isThemeScheme(candidate.scheme) ? candidate.scheme : DEFAULT_THEME_SETTINGS.scheme,
     // Normalize so the value bound to `<input type="color">` is exactly
     // `#rrggbb` lowercase (isHexColor already requires the leading `#`).
     customColor: isHexColor(candidate.customColor)
@@ -227,9 +270,7 @@ function normalizeUpdateSettings(updates: unknown): UpdateSettings {
         : DEFAULT_UPDATE_SETTINGS.checkOnStartup,
     notificationLevel:
       typeof candidate.notificationLevel === "string" &&
-      UPDATE_NOTIFICATION_LEVELS.includes(
-        candidate.notificationLevel as UpdateNotificationLevel,
-      )
+      UPDATE_NOTIFICATION_LEVELS.includes(candidate.notificationLevel as UpdateNotificationLevel)
         ? (candidate.notificationLevel as UpdateNotificationLevel)
         : DEFAULT_UPDATE_SETTINGS.notificationLevel,
   };
@@ -258,9 +299,7 @@ function normalizeUiProfileSettings(profile: unknown): UiProfileSettings {
         ? candidate.onboarded
         : DEFAULT_UI_PROFILE_SETTINGS.onboarded,
     locked:
-      typeof candidate.locked === "boolean"
-        ? candidate.locked
-        : DEFAULT_UI_PROFILE_SETTINGS.locked,
+      typeof candidate.locked === "boolean" ? candidate.locked : DEFAULT_UI_PROFILE_SETTINGS.locked,
     hiddenDataSources: normalizeStringList(candidate.hiddenDataSources),
     hiddenPlugins: normalizeStringList(candidate.hiddenPlugins),
     hiddenMenus: normalizeStringList(candidate.hiddenMenus),
@@ -268,9 +307,7 @@ function normalizeUiProfileSettings(profile: unknown): UiProfileSettings {
   };
 }
 
-function normalizeDesktopLayoutSettings(
-  layout: unknown,
-): DesktopLayoutSettings {
+function normalizeDesktopLayoutSettings(layout: unknown): DesktopLayoutSettings {
   if (!layout || typeof layout !== "object") {
     return DEFAULT_DESKTOP_LAYOUT_SETTINGS;
   }
@@ -314,10 +351,7 @@ function saveDesktopSettings(settings: DesktopSettings): void {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(
-      DESKTOP_SETTINGS_STORAGE_KEY,
-      JSON.stringify(settings),
-    );
+    window.localStorage.setItem(DESKTOP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   } catch {
     // Persistence is best-effort; ignore quota or disabled-storage errors.
   }
@@ -325,8 +359,7 @@ function saveDesktopSettings(settings: DesktopSettings): void {
 
 export const useDesktopSettingsStore = create<DesktopSettingsState>((set) => ({
   desktopSettings: loadDesktopSettings(),
-  setDesktopSettings: (settings) =>
-    set({ desktopSettings: normalizeDesktopSettings(settings) }),
+  setDesktopSettings: (settings) => set({ desktopSettings: normalizeDesktopSettings(settings) }),
 }));
 
 export function useDesktopSettingsPersistence() {

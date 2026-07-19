@@ -2,11 +2,7 @@ import type { GeoLibreLayer, LayerStyle } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
 import type { IControl, Map as MapLibreMap } from "maplibre-gl";
 
-export type GeoLibreMapControlPosition =
-  | "top-left"
-  | "top-right"
-  | "bottom-left"
-  | "bottom-right";
+export type GeoLibreMapControlPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
 export type GeoLibreBuiltInMapControl =
   | "navigation"
@@ -188,11 +184,7 @@ export interface GeoLibrePickedVectorFile {
 
 export interface GeoLibreAppAPI {
   setBasemap: (styleUrl: string) => void;
-  addGeoJsonLayer: (
-    name: string,
-    data: FeatureCollection,
-    sourcePath?: string,
-  ) => string;
+  addGeoJsonLayer: (name: string, data: FeatureCollection, sourcePath?: string) => string;
   /**
    * Add a native XYZ raster tile layer from a tile URL template (with
    * `{x}`/`{y}`/`{z}` placeholders) and return its layer id. Unlike calling
@@ -202,11 +194,7 @@ export interface GeoLibreAppAPI {
    * for forward-compatibility with host variants, so call it with optional
    * chaining.
    */
-  addTileLayer?: (
-    name: string,
-    url: string,
-    options?: GeoLibreTileLayerOptions,
-  ) => string;
+  addTileLayer?: (name: string, url: string, options?: GeoLibreTileLayerOptions) => string;
   /**
    * Add a native WMTS raster tile layer from a WMTS tile URL template and return
    * its layer id. Behaves like {@link addTileLayer} (the layer is a first-class
@@ -214,11 +202,7 @@ export interface GeoLibreAppAPI {
    * layers labelled distinctly. Typed optional for forward-compatibility, so
    * call it with optional chaining.
    */
-  addWmtsLayer?: (
-    name: string,
-    url: string,
-    options?: GeoLibreTileLayerOptions,
-  ) => string;
+  addWmtsLayer?: (name: string, url: string, options?: GeoLibreTileLayerOptions) => string;
   /**
    * Add a native WMS raster layer and return its layer id. The host builds the
    * GetMap tile URL from {@link GeoLibreWmsLayerOptions.url} and
@@ -238,11 +222,7 @@ export interface GeoLibreAppAPI {
    * rejects if the COG cannot be loaded. Typed optional for
    * forward-compatibility, so call it with optional chaining.
    */
-  addCogLayer?: (
-    name: string,
-    url: string,
-    options?: GeoLibreCogLayerOptions,
-  ) => Promise<string>;
+  addCogLayer?: (name: string, url: string, options?: GeoLibreCogLayerOptions) => Promise<string>;
   getActiveBasemap: () => string;
   onBasemapChange: (callback: (styleUrl: string) => void) => () => void;
   fetchArrayBuffer?: (url: string) => Promise<ArrayBuffer>;
@@ -258,10 +238,7 @@ export interface GeoLibreAppAPI {
    * boundary: the resolved URL grants no access a plugin does not already have,
    * since any plugin can fetch any same-origin URL directly.
    */
-  resolvePluginAssetUrl?: (
-    pluginId: string,
-    relativePath: string,
-  ) => string | null;
+  resolvePluginAssetUrl?: (pluginId: string, relativePath: string) => string | null;
   fitBounds?: (bounds: [number, number, number, number]) => void;
   getMap?: () => MapLibreMap | null;
   pickLocalDirectoryFiles?: () => Promise<File[] | null>;
@@ -285,9 +262,7 @@ export interface GeoLibreAppAPI {
    * Resolves to null off the desktop host, or when the file can no longer be
    * read (moved or deleted).
    */
-  readLocalVectorFile?: (
-    path: string,
-  ) => Promise<{
+  readLocalVectorFile?: (path: string) => Promise<{
     file: File;
     companionFiles: File[];
     nativeData?: FeatureCollection;
@@ -299,11 +274,7 @@ export interface GeoLibreAppAPI {
    * Pass `options` to control the file-type label/extensions (defaults to
    * GeoJSON).
    */
-  exportTextFile?: (
-    filename: string,
-    content: string,
-    options?: GeoLibreFileDialogOptions,
-  ) => void;
+  exportTextFile?: (filename: string, content: string, options?: GeoLibreFileDialogOptions) => void;
   /**
    * Prompt the user to pick a text file and return its contents (a native open
    * dialog under Tauri, a file input on the web). Resolves to null when the
@@ -314,25 +285,13 @@ export interface GeoLibreAppAPI {
    * user dismisses the dialog without choosing a file. Under Tauri (the
    * primary desktop target) cancel resolves to null as expected.
    */
-  importTextFile?: (
-    options?: GeoLibreFileDialogOptions,
-  ) => Promise<string | null>;
-  registerExternalNativeLayer?: (
-    layer: GeoLibreExternalNativeLayerRegistration,
-  ) => void;
+  importTextFile?: (options?: GeoLibreFileDialogOptions) => Promise<string | null>;
+  registerExternalNativeLayer?: (layer: GeoLibreExternalNativeLayerRegistration) => void;
   unregisterExternalNativeLayer?: (id: string) => void;
-  addMapControl: (
-    control: IControl,
-    position?: GeoLibreMapControlPosition,
-  ) => boolean;
+  addMapControl: (control: IControl, position?: GeoLibreMapControlPosition) => boolean;
   removeMapControl: (control: IControl) => void;
-  setBuiltInMapControlVisible: (
-    control: GeoLibreBuiltInMapControl,
-    visible: boolean,
-  ) => boolean;
-  getBuiltInMapControlPosition: (
-    control: GeoLibreBuiltInMapControl,
-  ) => GeoLibreMapControlPosition;
+  setBuiltInMapControlVisible: (control: GeoLibreBuiltInMapControl, visible: boolean) => boolean;
+  getBuiltInMapControlPosition: (control: GeoLibreBuiltInMapControl) => GeoLibreMapControlPosition;
   setBuiltInMapControlPosition: (
     control: GeoLibreBuiltInMapControl,
     position: GeoLibreMapControlPosition,
@@ -437,9 +396,7 @@ export interface GeoLibreAppAPI {
    * {@link openFloatingPanel} is called. Unlike a right panel, several floating
    * panels can be open at once and they do not shrink the map.
    */
-  registerFloatingPanel?: (
-    panel: GeoLibreFloatingPanelRegistration,
-  ) => () => void;
+  registerFloatingPanel?: (panel: GeoLibreFloatingPanelRegistration) => () => void;
   /** Remove a registered floating panel (closing it if open). */
   unregisterFloatingPanel?: (id: string) => void;
   /** Open a floating panel (or bring an already-open one to the front). */
@@ -520,12 +477,37 @@ export interface GeoLibreToolbarMenu {
 export interface GeoLibreFloatingPanelRegistration {
   /** Stable unique id used to open/close the panel. */
   id: string;
-  /** Title shown in the card's title bar. */
-  title: string;
+  /**
+   * Title shown in the card's title bar. Pass a getter function to make the
+   * title reactive: it is re-evaluated on every `getFloatingPanel` call, so it
+   * picks up a new language without re-registering the panel. Caveat: the
+   * registry itself does not subscribe to i18n events, so the getter is only
+   * re-run when a consumer re-reads the panel. Today every host component that
+   * displays a title also calls `useTranslation()`, whose `languageChanged`
+   * re-render re-reads the panel as a side effect; a host that reads a panel
+   * without that subscription would show a stale title after a language switch
+   * until the next registry mutation, and should re-read the panel itself on
+   * language change. A plain string is frozen at registration time.
+   */
+  title: string | (() => string);
   /** Optional icon: a URL or `data:` URI rendered in the title bar. */
   icon?: string;
   /** Preferred card width in px (the host clamps it to a sensible range). */
   defaultWidth?: number;
+  /**
+   * Preferred card height in px. When set, the card opens at this height and its
+   * body fills it (so a `height:100%` plugin element grows with the card);
+   * omitted, the card sizes to its content. The host clamps it and lets the user
+   * resize from the corner handle.
+   */
+  defaultHeight?: number;
+  /**
+   * Which corner of the map the card first opens at (default `top-left`). The
+   * card stays freely draggable/resizable afterwards; a plugin can move it
+   * between corners by re-registering with a new position (used to back the
+   * Plugins-menu position submenu).
+   */
+  position?: GeoLibreMapControlPosition;
   /**
    * Populate the card body. Called once with an empty container the plugin
    * fills with its own DOM. The container stays mounted while the card is open,
@@ -576,8 +558,20 @@ export type GeoLibreRightPanelDock =
 export interface GeoLibreRightPanelRegistration {
   /** Stable unique id used to open/collapse/close the panel. */
   id: string;
-  /** Human-readable title shown in the panel header and collapsed rail. */
-  title: string;
+  /**
+   * Human-readable title shown in the panel header and collapsed rail.
+   * Pass a getter function to make the title reactive: it is re-evaluated on
+   * every `getRightPanel` call, so it picks up a new language without
+   * re-registering the panel. Caveat: the registry itself does not subscribe
+   * to i18n events, so the getter is only re-run when a consumer re-reads the
+   * panel. Today every host component that displays a title also calls
+   * `useTranslation()`, whose `languageChanged` re-render re-reads the panel
+   * as a side effect; a host that reads a panel without that subscription
+   * would show a stale title after a language switch until the next registry
+   * mutation, and should re-read the panel itself on language change. A plain
+   * string is frozen at registration time.
+   */
+  title: string | (() => string);
   /**
    * Where the panel docks initially: one of the four positional docks
    * (`left-of-layers`, `right-of-layers`, `left-of-style`, or `right-of-style`,
@@ -646,10 +640,7 @@ export interface GeoLibrePlugin {
    * invoked. A handler that throws is not counted as handled, so a later
    * dispatch for the same context retries it.
    */
-  handleUrlParameters?: (
-    app: GeoLibreAppAPI,
-    params: URLSearchParams,
-  ) => void | Promise<void>;
+  handleUrlParameters?: (app: GeoLibreAppAPI, params: URLSearchParams) => void | Promise<void>;
   getMapControlPosition?: () => GeoLibreMapControlPosition;
   setMapControlPosition?: (
     app: GeoLibreAppAPI,
@@ -666,4 +657,12 @@ export interface GeoLibreExternalPluginManifest {
   entry: string;
   description?: string;
   style?: string;
+  /**
+   * Activate the plugin on startup when no saved plugin state overrides it.
+   * Honored only for bundled drop-ins (public/plugins/<id>/), which are baked
+   * into the build by the deployer and therefore as trusted as built-ins.
+   * Ignored for plugins installed at runtime from zips or manifest URLs, so
+   * third-party plugins cannot force themselves active.
+   */
+  activeByDefault?: boolean;
 }

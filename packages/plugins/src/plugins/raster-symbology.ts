@@ -38,7 +38,9 @@ export type RasterSymbology = {
   customColors?: string[];
   /** How the class edges are derived. */
   method: RasterClassificationMethod;
-  /** Number of classes, clamped to [2, 12]. */
+  /** Number of classes: UI authoring clamps to [2, 12]; a stored categorical
+   * symbology (from the Raster Attribute Table) may carry up to
+   * {@link RASTER_MAX_STORED_CLASSES}. */
   classCount: number;
   /** Class edges, ascending, length `classCount + 1` (min..max inclusive). */
   breaks: number[];
@@ -47,6 +49,15 @@ export type RasterSymbology = {
 /** Minimum and maximum class count for raster classification. */
 export const RASTER_MIN_CLASSES = 2;
 export const RASTER_MAX_CLASSES = 12;
+
+/**
+ * Upper bound on classes a *stored* symbology may carry. The classification UI
+ * caps authoring at {@link RASTER_MAX_CLASSES}, but a categorical symbology
+ * applied from the Raster Attribute Table carries one class per pixel value
+ * (a landcover raster easily exceeds 12). 256 matches the width of the
+ * colormap lookup texture, past which classes cannot be told apart anyway.
+ */
+export const RASTER_MAX_STORED_CLASSES = 256;
 
 /** Number of columns in a colormap lookup texture (matches deck.gl-raster). */
 export const COLORMAP_TEXTURE_WIDTH = 256;
@@ -70,10 +81,7 @@ export type RasterBandStats = {
  */
 export function clampRasterClassCount(value: number): number {
   if (!Number.isFinite(value)) return RASTER_MIN_CLASSES;
-  return Math.min(
-    RASTER_MAX_CLASSES,
-    Math.max(RASTER_MIN_CLASSES, Math.round(value)),
-  );
+  return Math.min(RASTER_MAX_CLASSES, Math.max(RASTER_MIN_CLASSES, Math.round(value)));
 }
 
 /**
@@ -85,10 +93,7 @@ export function clampRasterClassCount(value: number): number {
  * @param p - The percentile in [0, 1].
  * @returns The value at percentile `p`.
  */
-export function percentileFromHistogram(
-  stats: RasterBandStats,
-  p: number,
-): number {
+export function percentileFromHistogram(stats: RasterBandStats, p: number): number {
   const { min, max, histogram } = stats;
   const bins = histogram.length;
   if (bins === 0 || max <= min) return min;
@@ -129,9 +134,7 @@ export function computeRasterBreaks(
   const edgeCount = count + 1;
 
   if (method === "manual") {
-    const edges = (manualBreaks ?? [])
-      .map((value) => Number(value))
-      .filter(Number.isFinite);
+    const edges = (manualBreaks ?? []).map((value) => Number(value)).filter(Number.isFinite);
     if (edges.length === edgeCount) return [...edges].sort((a, b) => a - b);
     // Fall back to an even spread across whatever range we can infer so the
     // editor always starts from a sensible, correctly sized set of edges.
@@ -165,10 +168,7 @@ export function computeRasterBreaks(
  * @param customColors - Optional user-defined anchor colors.
  * @returns The anchor colors to interpolate.
  */
-export function rampBaseColors(
-  ramp: string,
-  customColors?: readonly string[],
-): readonly string[] {
+export function rampBaseColors(ramp: string, customColors?: readonly string[]): readonly string[] {
   return customColors && customColors.length >= RASTER_MIN_CUSTOM_COLORS
     ? customColors
     : getVectorColorRamp(ramp).colors;
@@ -204,8 +204,7 @@ export function buildSteppedColormapRgba(
   const max = breaks[breaks.length - 1];
   const span = max - min;
   // Normalized interior edges in [0, 1]; degenerate (min === max) → single class.
-  const normalizedEdges =
-    span > 0 ? breaks.map((edge) => (edge - min) / span) : null;
+  const normalizedEdges = span > 0 ? breaks.map((edge) => (edge - min) / span) : null;
 
   for (let column = 0; column < width; column += 1) {
     const t = column / (width - 1);
@@ -219,9 +218,7 @@ export function buildSteppedColormapRgba(
         }
       }
     }
-    const color = parseHexColor(
-      orderedColors[classIndex] ?? orderedColors.at(-1) ?? "#000000",
-    );
+    const color = parseHexColor(orderedColors[classIndex] ?? orderedColors.at(-1) ?? "#000000");
     const offset = column * 4;
     rgba[offset] = color.r;
     rgba[offset + 1] = color.g;
@@ -271,9 +268,7 @@ export function buildContinuousColormapRgba(
  * @param layer - A store layer created by `createRasterStoreLayer`.
  * @returns The validated symbology, or null when absent / malformed.
  */
-export function savedRasterSymbology(
-  layer: GeoLibreLayer,
-): RasterSymbology | null {
+export function savedRasterSymbology(layer: GeoLibreLayer): RasterSymbology | null {
   const raw = layer.metadata.rasterSymbology;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const candidate = raw as Record<string, unknown>;
@@ -290,14 +285,21 @@ export function savedRasterSymbology(
     return null;
   }
   if (typeof candidate.classCount !== "number") return null;
-  const classCount = clampRasterClassCount(candidate.classCount);
 
+  // The breaks are the authoritative class edges (the renderer sizes the
+  // stepped texture off breaks.length), so the class count is derived from
+  // them rather than trusted from the stored field. This keeps records
+  // consistent by construction: a categorical symbology from the Raster
+  // Attribute Table may carry one class per pixel value (well past the UI's
+  // RASTER_MAX_CLASSES authoring cap, up to RASTER_MAX_STORED_CLASSES), and a
+  // legacy record whose stored count disagrees with its edges (older versions
+  // clamped the count but not the breaks) renders from its edges instead of
+  // being dropped.
   if (
     !Array.isArray(candidate.breaks) ||
-    candidate.breaks.length !== classCount + 1 ||
-    !candidate.breaks.every(
-      (value) => typeof value === "number" && Number.isFinite(value),
-    )
+    candidate.breaks.length < RASTER_MIN_CLASSES + 1 ||
+    candidate.breaks.length > RASTER_MAX_STORED_CLASSES + 1 ||
+    !candidate.breaks.every((value) => typeof value === "number" && Number.isFinite(value))
   ) {
     return null;
   }
@@ -305,6 +307,7 @@ export function savedRasterSymbology(
   for (let index = 1; index < breaks.length; index += 1) {
     if (breaks[index] < breaks[index - 1]) return null;
   }
+  const classCount = breaks.length - 1;
 
   // A custom ramp needs at least two valid colors; drop malformed entries so a
   // hand-edited project silently falls back to the named ramp rather than

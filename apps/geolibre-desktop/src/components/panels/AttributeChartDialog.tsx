@@ -15,6 +15,7 @@ import {
 } from "@geolibre/ui";
 import { Download } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { downloadChartPng, downloadChartSvg } from "../../lib/chart-export";
 import { sanitizeExportFileName } from "../../lib/vector-export";
 import {
@@ -51,14 +52,9 @@ export function AttributeChartDialog({
   columns,
   layerName,
 }: AttributeChartDialogProps) {
-  const numericCols = useMemo(
-    () => numericColumns(rows, columns),
-    [rows, columns],
-  );
-  const categoryCols = useMemo(
-    () => categoricalColumns(rows, columns),
-    [rows, columns],
-  );
+  const { t } = useTranslation();
+  const numericCols = useMemo(() => numericColumns(rows, columns), [rows, columns]);
+  const categoryCols = useMemo(() => categoricalColumns(rows, columns), [rows, columns]);
 
   const [chartType, setChartType] = useState<ChartType>("histogram");
   const [field, setField] = useState("");
@@ -120,9 +116,7 @@ export function AttributeChartDialog({
     setExportError(null);
     const base = `${sanitizeExportFileName(layerName || "chart")}-${chartType}`;
     const onError = (error: unknown) =>
-      setExportError(
-        error instanceof Error ? error.message : "Could not export the chart.",
-      );
+      setExportError(error instanceof Error ? error.message : "Could not export the chart.");
     if (format === "svg") {
       try {
         downloadChartSvg(svg, CHART_W, CHART_H, `${base}.svg`);
@@ -141,9 +135,7 @@ export function AttributeChartDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Charts</DialogTitle>
-          <DialogDescription>
-            {`Visualize fields in "${layerName}".`}
-          </DialogDescription>
+          <DialogDescription>{`Visualize fields in "${layerName}".`}</DialogDescription>
         </DialogHeader>
 
         {!hasChartable ? (
@@ -159,9 +151,7 @@ export function AttributeChartDialog({
                   id="chart-type"
                   className="w-36"
                   value={chartType}
-                  onChange={(event) =>
-                    setChartType(event.target.value as ChartType)
-                  }
+                  onChange={(event) => setChartType(event.target.value as ChartType)}
                 >
                   <option value="histogram" disabled={!hasNumeric}>
                     Histogram
@@ -184,12 +174,10 @@ export function AttributeChartDialog({
                 </Select>
               </div>
 
-              {(chartType === "histogram" ||
-                chartType === "line" ||
-                chartType === "box") && (
+              {(chartType === "histogram" || chartType === "line" || chartType === "box") && (
                 <FieldSelect
                   id="chart-field"
-                  label="Field"
+                  label={t("attributeTable.chart.field")}
                   value={field}
                   options={numericCols}
                   onChange={setField}
@@ -236,14 +224,14 @@ export function AttributeChartDialog({
                 <>
                   <FieldSelect
                     id="chart-x"
-                    label="X axis"
+                    label={t("attributeTable.chart.xAxis")}
                     value={xField}
                     options={numericCols}
                     onChange={setXField}
                   />
                   <FieldSelect
                     id="chart-y"
-                    label="Y axis"
+                    label={t("attributeTable.chart.yAxis")}
                     value={yField}
                     options={numericCols}
                     onChange={setYField}
@@ -255,7 +243,7 @@ export function AttributeChartDialog({
                 <>
                   <FieldSelect
                     id="chart-category"
-                    label="Category"
+                    label={t("attributeTable.chart.category")}
                     value={catField}
                     options={categoryCols}
                     onChange={setCatField}
@@ -266,9 +254,7 @@ export function AttributeChartDialog({
                       id="chart-agg"
                       className="w-32"
                       value={barAgg}
-                      onChange={(event) =>
-                        setBarAgg(event.target.value as BarAggregation)
-                      }
+                      onChange={(event) => setBarAgg(event.target.value as BarAggregation)}
                     >
                       <option value="count">Count</option>
                       <option value="sum" disabled={!hasNumeric}>
@@ -285,7 +271,7 @@ export function AttributeChartDialog({
                   {barAgg !== "count" && (
                     <FieldSelect
                       id="chart-value"
-                      label="Value"
+                      label={t("attributeTable.chart.value")}
                       value={barValueField}
                       options={numericCols}
                       onChange={setBarValueField}
@@ -303,9 +289,7 @@ export function AttributeChartDialog({
 
         <div className="flex items-center justify-end gap-2">
           {exportError ? (
-            <span className="mr-auto truncate text-xs text-destructive">
-              {exportError}
-            </span>
+            <span className="me-auto truncate text-xs text-destructive">{exportError}</span>
           ) : null}
           {hasChartable ? (
             <DropdownMenu>
@@ -316,9 +300,7 @@ export function AttributeChartDialog({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => downloadChart("png")}>
-                  PNG image
-                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => downloadChart("png")}>PNG image</DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => downloadChart("svg")}>
                   SVG vector
                 </DropdownMenuItem>

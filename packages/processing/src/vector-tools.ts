@@ -30,25 +30,20 @@ import type {
   Position,
   MultiPolygon,
 } from "geojson";
-import type { GeoLibreLayer } from "@geolibre/core";
+import { layerJoinKey, type GeoLibreLayer } from "@geolibre/core";
 import type { GeometryFamily, ProcessingAlgorithm, ProcessingContext } from "./types";
 import { createH3GridTool, binPointsTool } from "./h3-tools";
+import { TOPOLOGY_TOOLS } from "./topology-tools";
 
-/** Upper bound on input×overlay pairs for the main-thread intersection loop. */
-const MAX_CLIENT_PAIRS = 250_000;
+/** Upper bound on input×overlay pairs for the main-thread pairwise loops. */
+export const MAX_CLIENT_PAIRS = 250_000;
 
-function getLayer(
-  ctx: ProcessingContext,
-  paramId = "layer",
-): GeoLibreLayer | undefined {
+function getLayer(ctx: ProcessingContext, paramId = "layer"): GeoLibreLayer | undefined {
   const layerId = ctx.parameters[paramId] as string | undefined;
   return ctx.layers.find((l) => l.id === layerId);
 }
 
-function requireFeatures(
-  ctx: ProcessingContext,
-  paramId = "layer",
-): FeatureCollection | undefined {
+function requireFeatures(ctx: ProcessingContext, paramId = "layer"): FeatureCollection | undefined {
   const layer = getLayer(ctx, paramId);
   if (!layer?.geojson?.features?.length) {
     ctx.log(`Error: parameter "${paramId}" has no GeoJSON features`);
@@ -57,11 +52,7 @@ function requireFeatures(
   return layer.geojson;
 }
 
-function numberParam(
-  ctx: ProcessingContext,
-  id: string,
-  fallback: number,
-): number {
+function numberParam(ctx: ProcessingContext, id: string, fallback: number): number {
   const raw = ctx.parameters[id];
   const value = typeof raw === "string" ? Number(raw) : (raw as number);
   return Number.isFinite(value) ? value : fallback;
@@ -72,18 +63,15 @@ function isFamily(geometry: Geometry | null, family: GeometryFamily): boolean {
   const type = geometry?.type;
   if (!type) return false;
   if (family === "point") return type === "Point" || type === "MultiPoint";
-  if (family === "line")
-    return type === "LineString" || type === "MultiLineString";
+  if (family === "line") return type === "LineString" || type === "MultiLineString";
   return type === "Polygon" || type === "MultiPolygon";
 }
 
 /** Collect every polygon/multipolygon feature from a collection. */
-function polygonFeatures(
-  fc: FeatureCollection,
-): Feature<Polygon | MultiPolygon>[] {
-  return fc.features.filter((f) =>
-    isFamily(f.geometry, "polygon"),
-  ) as Feature<Polygon | MultiPolygon>[];
+function polygonFeatures(fc: FeatureCollection): Feature<Polygon | MultiPolygon>[] {
+  return fc.features.filter((f) => isFamily(f.geometry, "polygon")) as Feature<
+    Polygon | MultiPolygon
+  >[];
 }
 
 /** Split Polygon/MultiPolygon features into single-part Polygon features. */
@@ -107,9 +95,7 @@ function explodeToPolygons(features: Feature[]): Feature<Polygon>[] {
 }
 
 /** Merge all polygons of a collection into a single (multi)polygon feature. */
-function mergePolygons(
-  fc: FeatureCollection,
-): Feature<Polygon | MultiPolygon> | null {
+function mergePolygons(fc: FeatureCollection): Feature<Polygon | MultiPolygon> | null {
   const polys = polygonFeatures(fc);
   if (!polys.length) return null;
   let merged: Feature<Polygon | MultiPolygon> = polys[0];
@@ -123,14 +109,7 @@ function mergePolygons(
 }
 
 /** Summary statistics for Aggregate by attribute; kept in sync with the backend. */
-const AGGREGATE_STATS = new Set([
-  "count",
-  "sum",
-  "mean",
-  "min",
-  "max",
-  "median",
-]);
+const AGGREGATE_STATS = new Set(["count", "sum", "mean", "min", "max", "median"]);
 
 /**
  * Coerce a property value to a finite number the way pandas' ``to_numeric`` does
@@ -159,8 +138,7 @@ function toNumeric(value: unknown): number | null {
 function computeStat(nums: number[], statistic: string): number | null {
   if (statistic === "sum") return nums.reduce((a, b) => a + b, 0);
   if (!nums.length) return null;
-  if (statistic === "mean")
-    return nums.reduce((a, b) => a + b, 0) / nums.length;
+  if (statistic === "mean") return nums.reduce((a, b) => a + b, 0) / nums.length;
   // reduce, not Math.min/max(...nums): the spread passes every element as an
   // argument and a tens-of-thousands-element group would exceed the engine's
   // argument-count limit and throw.
@@ -169,9 +147,7 @@ function computeStat(nums: number[], statistic: string): number | null {
   if (statistic === "median") {
     const sorted = [...nums].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2
-      ? sorted[mid]
-      : (sorted[mid - 1] + sorted[mid]) / 2;
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   }
   return null;
 }
@@ -213,9 +189,7 @@ export const bufferTool: ProcessingAlgorithm = {
     const buffered = buffer(fc, distance, {
       units: units as "kilometers" | "meters" | "miles",
     });
-    const features = ((buffered?.features ?? []) as Feature[]).filter((f) =>
-      Boolean(f?.geometry),
-    );
+    const features = ((buffered?.features ?? []) as Feature[]).filter((f) => Boolean(f?.geometry));
     ctx.log(`Buffered ${features.length} feature(s) by ${distance} ${units}`);
     ctx.addResultLayer?.("Buffer", featureCollection(features));
   },
@@ -227,9 +201,7 @@ export const centroidsTool: ProcessingAlgorithm = {
   description: "Compute the centroid point of each feature",
   group: "Geometry",
   supportsSidecar: true,
-  parameters: [
-    { id: "layer", label: "Input layer", type: "layer", required: true },
-  ],
+  parameters: [{ id: "layer", label: "Input layer", type: "layer", required: true }],
   run: (ctx) => {
     const fc = requireFeatures(ctx);
     if (!fc) return;
@@ -247,9 +219,7 @@ export const convexHullTool: ProcessingAlgorithm = {
   description: "Compute the convex hull enclosing all features",
   group: "Geometry",
   supportsSidecar: true,
-  parameters: [
-    { id: "layer", label: "Input layer", type: "layer", required: true },
-  ],
+  parameters: [{ id: "layer", label: "Input layer", type: "layer", required: true }],
   run: (ctx) => {
     const fc = requireFeatures(ctx);
     if (!fc) return;
@@ -266,8 +236,7 @@ export const convexHullTool: ProcessingAlgorithm = {
 export const dissolveTool: ProcessingAlgorithm = {
   id: "dissolve",
   name: "Dissolve",
-  description:
-    "Merge polygon features into a single geometry, optionally grouped by a field",
+  description: "Merge polygon features into a single geometry, optionally grouped by a field",
   group: "Geometry",
   supportsSidecar: true,
   parameters: [
@@ -300,9 +269,7 @@ export const dissolveTool: ProcessingAlgorithm = {
     const dissolved = dissolve(featureCollection(polys), {
       propertyName: field || undefined,
     });
-    ctx.log(
-      `Dissolved ${polys.length} polygon(s) into ${dissolved.features.length} feature(s)`,
-    );
+    ctx.log(`Dissolved ${polys.length} polygon(s) into ${dissolved.features.length} feature(s)`);
     ctx.addResultLayer?.("Dissolve", dissolved);
   },
 };
@@ -313,9 +280,7 @@ export const boundingBoxTool: ProcessingAlgorithm = {
   description: "Compute the rectangular envelope of all features",
   group: "Geometry",
   supportsSidecar: true,
-  parameters: [
-    { id: "layer", label: "Input layer", type: "layer", required: true },
-  ],
+  parameters: [{ id: "layer", label: "Input layer", type: "layer", required: true }],
   run: (ctx) => {
     const fc = requireFeatures(ctx);
     if (!fc) return;
@@ -354,9 +319,7 @@ export const simplifyTool: ProcessingAlgorithm = {
     const tolerance = numberParam(ctx, "tolerance", 0.01);
     const highQuality = Boolean(ctx.parameters.highQuality);
     const simplified = simplify(fc, { tolerance, highQuality, mutate: false });
-    ctx.log(
-      `Simplified ${simplified.features.length} feature(s) (tolerance ${tolerance})`,
-    );
+    ctx.log(`Simplified ${simplified.features.length} feature(s) (tolerance ${tolerance})`);
     ctx.addResultLayer?.("Simplify", simplified);
   },
 };
@@ -422,10 +385,7 @@ export const clipTool: ProcessingAlgorithm = {
   run: (ctx) =>
     overlay(
       ctx,
-      (a, b) =>
-        intersect(featureCollection([a, b])) as Feature<
-          Polygon | MultiPolygon
-        > | null,
+      (a, b) => intersect(featureCollection([a, b])) as Feature<Polygon | MultiPolygon> | null,
       "Clip",
       true,
     ),
@@ -521,10 +481,7 @@ export const differenceTool: ProcessingAlgorithm = {
   run: (ctx) =>
     overlay(
       ctx,
-      (a, b) =>
-        difference(featureCollection([a, b])) as Feature<
-          Polygon | MultiPolygon
-        > | null,
+      (a, b) => difference(featureCollection([a, b])) as Feature<Polygon | MultiPolygon> | null,
       "Difference",
       true,
     ),
@@ -581,11 +538,7 @@ type SpatialPredicate = "intersects" | "within" | "contains";
 type SpatialJoinHow = "inner" | "left";
 
 /** Valid spatial-join predicates/join-types; kept in sync with the backend guard. */
-const SPATIAL_JOIN_PREDICATES: SpatialPredicate[] = [
-  "intersects",
-  "within",
-  "contains",
-];
+const SPATIAL_JOIN_PREDICATES: SpatialPredicate[] = ["intersects", "within", "contains"];
 const SPATIAL_JOIN_HOW: SpatialJoinHow[] = ["inner", "left"];
 
 /**
@@ -594,11 +547,7 @@ const SPATIAL_JOIN_HOW: SpatialJoinHow[] = ["inner", "left"];
  * is "input contains join". Throws on geometries Turf cannot evaluate (e.g. a
  * GeometryCollection).
  */
-function rawPredicate(
-  input: Feature,
-  join: Feature,
-  predicate: SpatialPredicate,
-): boolean {
+function rawPredicate(input: Feature, join: Feature, predicate: SpatialPredicate): boolean {
   if (predicate === "within") return booleanWithin(input, join);
   if (predicate === "contains") return booleanContains(input, join);
   return booleanIntersects(input, join);
@@ -610,11 +559,7 @@ function rawPredicate(
  * (a pair that can't be evaluated simply doesn't match); the complement
  * (`disjoint`) must instead distinguish "no match" from "couldn't evaluate".
  */
-function matchesPredicate(
-  input: Feature,
-  join: Feature,
-  predicate: SpatialPredicate,
-): boolean {
+function matchesPredicate(input: Feature, join: Feature, predicate: SpatialPredicate): boolean {
   try {
     return rawPredicate(input, join, predicate);
   } catch {
@@ -678,16 +623,12 @@ export const spatialJoinTool: ProcessingAlgorithm = {
     }
     const how = (ctx.parameters.how as string) || "inner";
     if (!SPATIAL_JOIN_HOW.includes(how as SpatialJoinHow)) {
-      ctx.log(
-        `Error: unknown join type '${how}'; expected ${SPATIAL_JOIN_HOW.join(", ")}`,
-      );
+      ctx.log(`Error: unknown join type '${how}'; expected ${SPATIAL_JOIN_HOW.join(", ")}`);
       return;
     }
     // An empty join layer is still well-defined: a left join keeps every input
     // feature unchanged, an inner join yields nothing (mirrors gpd.sjoin).
-    const joinFeatures = (joinLayer.geojson?.features ?? []).filter(
-      (f) => f.geometry,
-    );
+    const joinFeatures = (joinLayer.geojson?.features ?? []).filter((f) => f.geometry);
     // This pairwise test runs on the main thread; cap it so very large layers
     // cannot freeze the browser tab. Use the Sidecar engine for bigger jobs.
     const pairs = inputFeatures.length * joinFeatures.length;
@@ -750,19 +691,13 @@ export const spatialJoinTool: ProcessingAlgorithm = {
 /**
  * Match key for the Attribute join tool: empty values (null/undefined/NaN/empty
  * string) never match a row, mirroring a SQL/pandas NaN join key. Non-empty
- * values are keyed by {@link valueToString}, so a numeric `5` and the string
- * `"5"` join (both render `"5"`) while a zero-padded code like `"01001"` only
- * matches another `"01001"`. Kept in sync with the backend's
- * ``_attribute_join_key``.
+ * values are keyed stringified, so a numeric `5` and the string `"5"` join
+ * (both render `"5"`) while a zero-padded code like `"01001"` only matches
+ * another `"01001"`. Delegates to `@geolibre/core`'s {@link layerJoinKey} —
+ * the persistent-join engine's key — so the two client-side joins cannot
+ * drift; the backend's ``_attribute_join_key`` remains the Python mirror.
  */
-function attributeJoinKey(value: unknown): string | null {
-  const isEmpty =
-    value === null ||
-    value === undefined ||
-    (typeof value === "number" && Number.isNaN(value)) ||
-    valueToString(value) === "";
-  return isEmpty ? null : valueToString(value);
-}
+const attributeJoinKey = layerJoinKey;
 
 /**
  * Join types accepted by the Attribute join tool. Kept local (rather than
@@ -785,8 +720,7 @@ export const attributeJoinTool: ProcessingAlgorithm = {
       label: "Join layer (table)",
       type: "layer",
       required: true,
-      description:
-        "The layer whose attributes are brought over. Its geometry is ignored.",
+      description: "The layer whose attributes are brought over. Its geometry is ignored.",
     },
     {
       id: "target_field",
@@ -840,9 +774,7 @@ export const attributeJoinTool: ProcessingAlgorithm = {
     }
     const how = (ctx.parameters.how as string) || "left";
     if (!ATTRIBUTE_JOIN_HOW.includes(how as (typeof ATTRIBUTE_JOIN_HOW)[number])) {
-      ctx.log(
-        `Error: unknown join type '${how}'; expected ${ATTRIBUTE_JOIN_HOW.join(", ")}`,
-      );
+      ctx.log(`Error: unknown join type '${how}'; expected ${ATTRIBUTE_JOIN_HOW.join(", ")}`);
       return;
     }
     // An empty join layer is well-defined: a left join keeps every target
@@ -889,9 +821,7 @@ export const attributeJoinTool: ProcessingAlgorithm = {
       // A join layer that carries only the key column transfers no attributes;
       // warn so the user isn't left thinking a silent no-op succeeded.
       if (joinFeatures.length && !selectedFields.length) {
-        ctx.log(
-          "Note: no fields to bring over (join layer only contains the key column)",
-        );
+        ctx.log("Note: no fields to bring over (join layer only contains the key column)");
       }
     }
 
@@ -1014,8 +944,7 @@ function matchesValue(value: unknown, operator: string, raw: string): boolean {
 
   const sv = valueToString(value);
   if (operator === "contains") return sv.toLowerCase().includes(raw.toLowerCase());
-  if (operator === "starts-with")
-    return sv.toLowerCase().startsWith(raw.toLowerCase());
+  if (operator === "starts-with") return sv.toLowerCase().startsWith(raw.toLowerCase());
 
   // Numeric comparison only when the value and the input both parse as numbers.
   // Use parseFiniteNumber (not Number()) so we accept exactly what Python's
@@ -1023,10 +952,7 @@ function matchesValue(value: unknown, operator: string, raw: string): boolean {
   // client and Python engines in agreement.
   const vNum = typeof value === "number" ? value : parseFiniteNumber(sv);
   const rNum = parseFiniteNumber(raw);
-  const numeric =
-    typeof value !== "boolean" &&
-    Number.isFinite(vNum) &&
-    Number.isFinite(rNum);
+  const numeric = typeof value !== "boolean" && Number.isFinite(vNum) && Number.isFinite(rNum);
   const a: number | string = numeric ? vNum : sv;
   const b: number | string = numeric ? rNum : raw;
   switch (operator) {
@@ -1050,8 +976,7 @@ function matchesValue(value: unknown, operator: string, raw: string): boolean {
 export const selectByValueTool: ProcessingAlgorithm = {
   id: "select-by-value",
   name: "Select by value",
-  description:
-    "Extract features whose attribute value matches a condition into a new layer",
+  description: "Extract features whose attribute value matches a condition into a new layer",
   group: "Select",
   supportsSidecar: true,
   parameters: [
@@ -1114,32 +1039,87 @@ export const selectByValueTool: ProcessingAlgorithm = {
     // A field absent from every feature is treated as all-empty (schemaless
     // GeoJSON), so is-empty matches everything and the rest match nothing —
     // rather than erroring. matchesValue handles the missing value per feature.
-    const selected = fc.features.filter((f) =>
-      matchesValue(f.properties?.[field], operator, raw),
-    );
-    ctx.log(
-      `Select by value: ${selected.length} of ${fc.features.length} feature(s) matched`,
-    );
+    const selected = fc.features.filter((f) => matchesValue(f.properties?.[field], operator, raw));
+    ctx.log(`Select by value: ${selected.length} of ${fc.features.length} feature(s) matched`);
     ctx.addResultLayer?.("Select by value", featureCollection(selected));
   },
 };
 
 /** Select by location adds "disjoint" (the complement of intersects). */
-type SelectLocationPredicate = SpatialPredicate | "disjoint";
+export type SelectLocationPredicate = SpatialPredicate | "disjoint";
 
 /** Spatial predicates for Select by location; kept in sync with the backend. */
-const SELECT_LOCATION_PREDICATES = new Set<SelectLocationPredicate>([
+export const SELECT_LOCATION_PREDICATES = new Set<SelectLocationPredicate>([
   "intersects",
   "within",
   "contains",
   "disjoint",
 ]);
 
+/** Result of {@link matchFeaturesByLocation}. */
+export interface LocationMatches {
+  /** One entry per input feature (aligned by index): did it match? */
+  matches: boolean[];
+  /**
+   * Features excluded from a `disjoint` result only because a pair could not
+   * be evaluated (e.g. a GeometryCollection Turf cannot test). Always 0 for
+   * positive predicates.
+   */
+  unevaluableDropped: number;
+}
+
+/**
+ * Tests every input feature against the filter features under a spatial
+ * predicate, mirroring the sidecar's semantics: "disjoint" matches features
+ * that intersect nothing, the others match features relating to any filter
+ * feature. Features without geometry never match; filter features without
+ * geometry are ignored. Shared by the Select by location processing tool and
+ * the interactive Select by Location dialog (#1314).
+ *
+ * The pairwise test runs on the calling thread — callers should cap
+ * `inputFeatures.length * filterFeatures.length` at {@link MAX_CLIENT_PAIRS}.
+ */
+export function matchFeaturesByLocation(
+  inputFeatures: readonly Feature[],
+  filterFeatures: readonly Feature[],
+  predicate: SelectLocationPredicate,
+): LocationMatches {
+  const evaluableFilters = filterFeatures.filter((f) => f.geometry);
+  // In the false branch TS narrows `predicate` to SpatialPredicate, so this is
+  // checked — no cast — and would error if the "disjoint" guard were removed.
+  const test: SpatialPredicate = predicate === "disjoint" ? "intersects" : predicate;
+  let unevaluableDropped = 0;
+  const matches = inputFeatures.map((f) => {
+    if (!f.geometry) return false;
+    let matchesAny = false;
+    let unevaluable = false;
+    for (const g of evaluableFilters) {
+      try {
+        if (rawPredicate(f, g, test)) {
+          matchesAny = true;
+          break;
+        }
+      } catch {
+        // Turf can't evaluate this pair (e.g. a GeometryCollection).
+        unevaluable = true;
+      }
+    }
+    // For positive predicates an unevaluable pair is just a non-match. For the
+    // complement (disjoint) we must NOT claim "no intersection" when a pair
+    // couldn't be checked, so require every pair to have been evaluable.
+    if (predicate === "disjoint") {
+      if (!matchesAny && unevaluable) unevaluableDropped += 1;
+      return !matchesAny && !unevaluable;
+    }
+    return matchesAny;
+  });
+  return { matches, unevaluableDropped };
+}
+
 export const selectByLocationTool: ProcessingAlgorithm = {
   id: "select-by-location",
   name: "Select by location",
-  description:
-    "Extract features by their spatial relationship to a second layer into a new layer",
+  description: "Extract features by their spatial relationship to a second layer into a new layer",
   group: "Select",
   supportsSidecar: true,
   parameters: [
@@ -1174,9 +1154,7 @@ export const selectByLocationTool: ProcessingAlgorithm = {
       return;
     }
     const predicateInput = (ctx.parameters.predicate as string) || "intersects";
-    if (
-      !SELECT_LOCATION_PREDICATES.has(predicateInput as SelectLocationPredicate)
-    ) {
+    if (!SELECT_LOCATION_PREDICATES.has(predicateInput as SelectLocationPredicate)) {
       ctx.log(`Error: unknown predicate '${predicateInput}'`);
       return;
     }
@@ -1200,37 +1178,12 @@ export const selectByLocationTool: ProcessingAlgorithm = {
     // features matching the predicate against any filter feature. With an empty
     // filter layer nothing matches, so disjoint keeps everything and the rest
     // keep nothing — matching the backend.
-    // In the else branch TS narrows `predicate` to SpatialPredicate, so this is
-    // checked — no cast — and would error if the "disjoint" guard were removed.
-    const test: SpatialPredicate =
-      predicate === "disjoint" ? "intersects" : predicate;
-    // For disjoint, a feature dropped only because a pair was unevaluable is not
-    // a confident result; count those to warn the user (the sidecar, via
-    // GeoPandas, can evaluate geometries Turf cannot, e.g. GeometryCollections).
-    let unevaluableDropped = 0;
-    const selected = inputFeatures.filter((f) => {
-      let matchesAny = false;
-      let unevaluable = false;
-      for (const g of filterFeatures) {
-        try {
-          if (rawPredicate(f, g, test)) {
-            matchesAny = true;
-            break;
-          }
-        } catch {
-          // Turf can't evaluate this pair (e.g. a GeometryCollection).
-          unevaluable = true;
-        }
-      }
-      // For positive predicates an unevaluable pair is just a non-match. For the
-      // complement (disjoint) we must NOT claim "no intersection" when a pair
-      // couldn't be checked, so require every pair to have been evaluable.
-      if (predicate === "disjoint") {
-        if (!matchesAny && unevaluable) unevaluableDropped += 1;
-        return !matchesAny && !unevaluable;
-      }
-      return matchesAny;
-    });
+    const { matches, unevaluableDropped } = matchFeaturesByLocation(
+      inputFeatures,
+      filterFeatures,
+      predicate,
+    );
+    const selected = inputFeatures.filter((_, index) => matches[index]);
     // Report the total the user sees in the layer list; note any geometry-less
     // features that were skipped (the sidecar drops them too).
     const skipped = input.features.length - inputFeatures.length;
@@ -1285,9 +1238,7 @@ export const explodeTool: ProcessingAlgorithm = {
     "Split multipart geometries into single-part features (one feature per part), keeping each parent's attributes",
   group: "Geometry",
   supportsSidecar: true,
-  parameters: [
-    { id: "layer", label: "Input layer", type: "layer", required: true },
-  ],
+  parameters: [{ id: "layer", label: "Input layer", type: "layer", required: true }],
   run: (ctx) => {
     const fc = requireFeatures(ctx);
     if (!fc) return;
@@ -1415,24 +1366,18 @@ export const aggregateTool: ProcessingAlgorithm = {
       // Polygons exist but every one had a null/undefined group value; the
       // sidecar (pandas groupby dropna=True) yields an empty grouped result
       // here, so match it instead of erroring on "no polygons".
-      ctx.log(
-        `Aggregated ${polygonCount} feature(s) into 0 group(s) by '${groupField}'`,
-      );
+      ctx.log(`Aggregated ${polygonCount} feature(s) into 0 group(s) by '${groupField}'`);
       ctx.addResultLayer?.("Aggregate by attribute", featureCollection([]));
       return;
     }
-    const outColumn =
-      statistic === "count" ? "count" : `${statField}_${statistic}`;
+    const outColumn = statistic === "count" ? "count" : `${statField}_${statistic}`;
     const results: Feature[] = [];
     for (const group of groups.values()) {
       // Each group holds only polygon features, so mergePolygons always returns a
       // geometry; the null check just satisfies its `| null` return type.
       const merged = mergePolygons(featureCollection(group.features));
       if (!merged) continue;
-      const statValue =
-        statistic === "count"
-          ? group.count
-          : computeStat(group.nums, statistic);
+      const statValue = statistic === "count" ? group.count : computeStat(group.nums, statistic);
       results.push({
         type: "Feature",
         properties: { [groupField]: group.value, [outColumn]: statValue },
@@ -1511,9 +1456,7 @@ function smoothRing(ring: Position[], iterations: number): Position[] {
     ring.length > 1 &&
     ring[0][0] === ring[ring.length - 1][0] &&
     ring[0][1] === ring[ring.length - 1][1];
-  let pts: Position[] = (closed ? ring.slice(0, -1) : ring).map((p) =>
-    p.slice(0, 3),
-  );
+  let pts: Position[] = (closed ? ring.slice(0, -1) : ring).map((p) => p.slice(0, 3));
   for (let k = 0; k < iterations; k += 1) pts = chaikinOnce(pts, true);
   // A ring needs >= 3 distinct vertices to form a valid polygon; an empty or
   // otherwise degenerate (1-2 vertex) ring collapses to an empty ring rather
@@ -1544,18 +1487,14 @@ function smoothGeometry(geometry: Geometry, iterations: number): Geometry {
     case "MultiPolygon":
       return {
         type: "MultiPolygon",
-        coordinates: geometry.coordinates.map((poly) =>
-          poly.map((r) => smoothRing(r, iterations)),
-        ),
+        coordinates: geometry.coordinates.map((poly) => poly.map((r) => smoothRing(r, iterations))),
       };
     case "GeometryCollection":
       // Recurse so line/polygon members are smoothed instead of silently
       // passing through; point members fall to the default below.
       return {
         type: "GeometryCollection",
-        geometries: geometry.geometries.map((g) =>
-          smoothGeometry(g, iterations),
-        ),
+        geometries: geometry.geometries.map((g) => smoothGeometry(g, iterations)),
       };
     default:
       return geometry;
@@ -1606,9 +1545,7 @@ export const smoothTool: ProcessingAlgorithm = {
         // A GeometryCollection only counts if it actually has a line/polygon
         // member; a points-only collection passes through unchanged.
         (geometry.type === "GeometryCollection" &&
-          geometry.geometries.some(
-            (g) => isFamily(g, "line") || isFamily(g, "polygon"),
-          ));
+          geometry.geometries.some((g) => isFamily(g, "line") || isFamily(g, "polygon")));
       if (isSmoothable) smoothed += 1;
       return {
         type: "Feature",
@@ -1619,9 +1556,7 @@ export const smoothTool: ProcessingAlgorithm = {
         geometry: smoothGeometry(geometry, iterations),
       };
     });
-    ctx.log(
-      `Smoothed ${smoothed} feature(s) with ${iterations} iteration(s)`,
-    );
+    ctx.log(`Smoothed ${smoothed} feature(s) with ${iterations} iteration(s)`);
     ctx.addResultLayer?.("Smooth", featureCollection(features));
   },
 };
@@ -1833,9 +1768,7 @@ export const gridTool: ProcessingAlgorithm = {
         }
       }
     }
-    ctx.log(
-      `Created a ${cols}x${rows} grid (${features.length} cell(s))`,
-    );
+    ctx.log(`Created a ${cols}x${rows} grid (${features.length} cell(s))`);
     ctx.addResultLayer?.("Regular grid", featureCollection(features));
   },
 };
@@ -1903,12 +1836,7 @@ export const voronoiTool: ProcessingAlgorithm = {
     // Both diagrams are undefined for collinear/coincident points (a zero-area
     // bounding box). Turf's tin/voronoi would throw or return nothing; bail with
     // a clear message instead. Mirrors the backend guard.
-    const [minX, minY, maxX, maxY] = bbox(pointsFc) as [
-      number,
-      number,
-      number,
-      number,
-    ];
+    const [minX, minY, maxX, maxY] = bbox(pointsFc) as [number, number, number, number];
     if (minX === maxX || minY === maxY) {
       ctx.log(
         "Error: the points are collinear or coincident; Voronoi / Delaunay needs points that span an area",
@@ -1921,9 +1849,7 @@ export const voronoiTool: ProcessingAlgorithm = {
       // collinear points (non-zero-area bbox) still yield no triangle with area,
       // so report that rather than adding an empty layer.
       if (result.features.length === 0) {
-        ctx.log(
-          "Error: could not triangulate — the points are collinear (no triangle has area)",
-        );
+        ctx.log("Error: could not triangulate — the points are collinear (no triangle has area)");
         return;
       }
       ctx.log(
@@ -1937,29 +1863,19 @@ export const voronoiTool: ProcessingAlgorithm = {
     // extent rather than spanning the whole world.
     const dx = maxX - minX;
     const dy = maxY - minY;
-    const clip: BBox = [
-      minX - dx * 0.1,
-      minY - dy * 0.1,
-      maxX + dx * 0.1,
-      maxY + dy * 0.1,
-    ];
+    const clip: BBox = [minX - dx * 0.1, minY - dy * 0.1, maxX + dx * 0.1, maxY + dy * 0.1];
     const result = voronoiDiagram(pointsFc, { bbox: clip });
     // Keep only polygonal cells, matching the backend: clipping a cell whose
     // edge coincides with the bbox can in principle yield a degenerate
     // non-polygon geometry.
     const cells = (result.features ?? []).filter(
-      (f) =>
-        f?.geometry?.type === "Polygon" || f?.geometry?.type === "MultiPolygon",
+      (f) => f?.geometry?.type === "Polygon" || f?.geometry?.type === "MultiPolygon",
     );
     if (cells.length === 0) {
-      ctx.log(
-        "Error: could not build a Voronoi diagram — the points are collinear",
-      );
+      ctx.log("Error: could not build a Voronoi diagram — the points are collinear");
       return;
     }
-    ctx.log(
-      `Voronoi: produced ${cells.length} cell(s) from ${points.length} point(s)`,
-    );
+    ctx.log(`Voronoi: produced ${cells.length} cell(s) from ${points.length} point(s)`);
     ctx.addResultLayer?.("Voronoi", featureCollection(cells));
   },
 };
@@ -1973,10 +1889,7 @@ type LinearUnit = "kilometers" | "meters" | "miles";
  * non-numeric. Reuses the aggregate engine's coercion (numbers pass through,
  * numeric strings parse, booleans map to 1/0).
  */
-function numberField(
-  props: GeoJsonProperties,
-  field: string | undefined,
-): number | null {
+function numberField(props: GeoJsonProperties, field: string | undefined): number | null {
   if (!field) return null;
   return toNumeric(props?.[field]);
 }
@@ -2103,8 +2016,7 @@ export const cellSectorsTool: ProcessingAlgorithm = {
       label: "Radius field",
       type: "field",
       fieldSource: "layer",
-      description:
-        "Coverage radius. Falls back to the fixed radius when blank or non-numeric.",
+      description: "Coverage radius. Falls back to the fixed radius when blank or non-numeric.",
     },
     {
       id: "radius",
@@ -2146,12 +2058,9 @@ export const cellSectorsTool: ProcessingAlgorithm = {
   run: (ctx) => {
     const fc = requireFeatures(ctx);
     if (!fc) return;
-    const azimuthField =
-      (ctx.parameters.azimuthField as string)?.trim() || undefined;
-    const radiusField =
-      (ctx.parameters.radiusField as string)?.trim() || undefined;
-    const beamwidthField =
-      (ctx.parameters.beamwidthField as string)?.trim() || undefined;
+    const azimuthField = (ctx.parameters.azimuthField as string)?.trim() || undefined;
+    const radiusField = (ctx.parameters.radiusField as string)?.trim() || undefined;
+    const beamwidthField = (ctx.parameters.beamwidthField as string)?.trim() || undefined;
     const azimuthDefault = numberParam(ctx, "azimuth", 0);
     const radiusDefault = numberParam(ctx, "radius", 1);
     const beamwidthDefault = numberParam(ctx, "beamwidth", 65);
@@ -2183,13 +2092,9 @@ export const cellSectorsTool: ProcessingAlgorithm = {
       const full = angle === 360; // only reachable once the clamp above fired
       const wedge = full
         ? circle(point.geometry.coordinates, radius, { units: units as LinearUnit })
-        : sector(
-            point.geometry.coordinates,
-            radius,
-            azimuth - angle / 2,
-            azimuth + angle / 2,
-            { units: units as LinearUnit },
-          );
+        : sector(point.geometry.coordinates, radius, azimuth - angle / 2, azimuth + angle / 2, {
+            units: units as LinearUnit,
+          });
       if (!wedge?.geometry) {
         skipped += 1;
         continue;
@@ -2204,9 +2109,7 @@ export const cellSectorsTool: ProcessingAlgorithm = {
         `Skipped ${skipped} site(s) with a non-positive radius/beamwidth or degenerate geometry`,
       );
     }
-    ctx.log(
-      `Cell-site coverage: built ${sectors.length} sector(s) from ${points.length} site(s)`,
-    );
+    ctx.log(`Cell-site coverage: built ${sectors.length} sector(s) from ${points.length} site(s)`);
     ctx.addResultLayer?.("Cell-site coverage", featureCollection(sectors));
   },
 };
@@ -2280,11 +2183,7 @@ export const trajectorySpeedTool: ProcessingAlgorithm = {
       ctx.log(`Error: unknown speed units '${speedUnits}'`);
       return;
     }
-    const { groups, skipped, skippedNoId } = collectTimedPoints(
-      fc,
-      timeField,
-      idField,
-    );
+    const { groups, skipped, skippedNoId } = collectTimedPoints(fc, timeField, idField);
     const segments: Feature<LineString>[] = [];
     for (const [key, pts] of groups) {
       for (let i = 1; i < pts.length; i += 1) {
@@ -2294,8 +2193,7 @@ export const trajectorySpeedTool: ProcessingAlgorithm = {
         const seconds = (b.time - a.time) / 1000;
         // Equal timestamps (the only non-positive gap after sorting) give an
         // undefined speed; emit the segment with null rather than Infinity.
-        const speed =
-          seconds > 0 ? Math.round((meters / seconds) * factor * 1000) / 1000 : null;
+        const speed = seconds > 0 ? Math.round((meters / seconds) * factor * 1000) / 1000 : null;
         segments.push({
           type: "Feature",
           properties: {
@@ -2312,8 +2210,7 @@ export const trajectorySpeedTool: ProcessingAlgorithm = {
       }
     }
     if (skipped) ctx.log(`Skipped ${skipped} point(s) with no parseable time`);
-    if (skippedNoId)
-      ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
+    if (skippedNoId) ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
     if (!segments.length) {
       ctx.log("Error: need at least two timed fixes in a target to build a segment");
       return;
@@ -2322,9 +2219,7 @@ export const trajectorySpeedTool: ProcessingAlgorithm = {
     // style-by-speed expression downstream isn't silently fed nulls.
     const nullSpeed = segments.filter((s) => s.properties?.speed === null).length;
     if (nullSpeed)
-      ctx.log(
-        `Warning: ${nullSpeed} segment(s) have identical timestamps and null speed`,
-      );
+      ctx.log(`Warning: ${nullSpeed} segment(s) have identical timestamps and null speed`);
     ctx.log(
       `Trajectory speed: built ${segments.length} segment(s) across ${groups.size} target(s)`,
     );
@@ -2369,8 +2264,7 @@ export const detectStopsTool: ProcessingAlgorithm = {
       label: "Target id field",
       type: "field",
       fieldSource: "layer",
-      description:
-        "Detects stops per target. Leave blank to treat all points as one target.",
+      description: "Detects stops per target. Leave blank to treat all points as one target.",
     },
     {
       id: "maxDistance",
@@ -2421,11 +2315,7 @@ export const detectStopsTool: ProcessingAlgorithm = {
       return;
     }
     const minDurationMs = numberParam(ctx, "minDuration", 60) * 1000;
-    const { groups, skipped, skippedNoId } = collectTimedPoints(
-      fc,
-      timeField,
-      idField,
-    );
+    const { groups, skipped, skippedNoId } = collectTimedPoints(fc, timeField, idField);
     let totalPoints = 0;
     for (const pts of groups.values()) totalPoints += pts.length;
     if (totalPoints === 0) {
@@ -2476,8 +2366,7 @@ export const detectStopsTool: ProcessingAlgorithm = {
             sumLonDelta += dLon;
             sumLat += p.coord[1];
           }
-          const meanLon =
-            ((anchorLon + sumLonDelta / run.length + 540) % 360) - 180;
+          const meanLon = ((anchorLon + sumLonDelta / run.length + 540) % 360) - 180;
           stops.push({
             type: "Feature",
             properties: {
@@ -2499,11 +2388,8 @@ export const detectStopsTool: ProcessingAlgorithm = {
       }
     }
     if (skipped) ctx.log(`Skipped ${skipped} point(s) with no parseable time`);
-    if (skippedNoId)
-      ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
-    ctx.log(
-      `Detect stops: found ${stops.length} stop(s) across ${groups.size} target(s)`,
-    );
+    if (skippedNoId) ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
+    ctx.log(`Detect stops: found ${stops.length} stop(s) across ${groups.size} target(s)`);
     ctx.addResultLayer?.("Stops", featureCollection(stops));
   },
 };
@@ -2701,8 +2587,7 @@ export const spaceTimeProximityTool: ProcessingAlgorithm = {
       }
     }
     if (skipped) ctx.log(`Skipped ${skipped} point(s) with no parseable time`);
-    if (skippedNoId)
-      ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
+    if (skippedNoId) ctx.log(`Skipped ${skippedNoId} point(s) with no '${idField}' value`);
     ctx.log(
       `Space-time proximity: found ${pairs.length} pair(s) within ${maxDistance} ${distanceUnits} and ${maxTimeValue} ${timeUnits}`,
     );
@@ -2739,6 +2624,8 @@ export const VECTOR_TOOLS: ProcessingAlgorithm[] = [
   trajectorySpeedTool,
   detectStopsTool,
   spaceTimeProximityTool,
+  // Data-quality tools (validity + topology rules) last, matching the menu.
+  ...TOPOLOGY_TOOLS,
 ];
 
 export function getVectorTool(id: string): ProcessingAlgorithm | undefined {

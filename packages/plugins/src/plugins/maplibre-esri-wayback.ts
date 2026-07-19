@@ -1,8 +1,4 @@
-import {
-  DEFAULT_LAYER_STYLE,
-  useAppStore,
-  type GeoLibreLayer,
-} from "@geolibre/core";
+import { DEFAULT_LAYER_STYLE, useAppStore, type GeoLibreLayer } from "@geolibre/core";
 import {
   DEFAULT_LAYER_ID,
   DEFAULT_SOURCE_ID,
@@ -14,11 +10,7 @@ import {
   type EsriWaybackRelease,
 } from "maplibre-gl-esri-wayback";
 import type { LayerSpecification } from "maplibre-gl";
-import type {
-  GeoLibreAppAPI,
-  GeoLibreMapControlPosition,
-  GeoLibrePlugin,
-} from "../types";
+import type { GeoLibreAppAPI, GeoLibreMapControlPosition, GeoLibrePlugin } from "../types";
 
 let esriWaybackPosition: GeoLibreMapControlPosition = "top-left";
 
@@ -36,13 +28,11 @@ let stateChangeHandler: EsriWaybackControlEventHandler | null = null;
 
 export const maplibreEsriWaybackPlugin: GeoLibrePlugin = {
   id: "maplibre-gl-esri-wayback",
-  name: "Esri Wayback",
+  name: "Historical Imagery",
   version: "0.2.0",
   activate: (app: GeoLibreAppAPI) => {
     if (!esriWaybackControl) {
-      esriWaybackControl = new EsriWaybackControl(
-        getEsriWaybackControlOptions(),
-      );
+      esriWaybackControl = new EsriWaybackControl(getEsriWaybackControlOptions());
       attachStoreSync(esriWaybackControl);
     }
 
@@ -66,10 +56,7 @@ export const maplibreEsriWaybackPlugin: GeoLibrePlugin = {
     removeCurrentWaybackStoreLayer();
   },
   getMapControlPosition: () => esriWaybackPosition,
-  setMapControlPosition: (
-    app: GeoLibreAppAPI,
-    position: GeoLibreMapControlPosition,
-  ) => {
+  setMapControlPosition: (app: GeoLibreAppAPI, position: GeoLibreMapControlPosition) => {
     esriWaybackPosition = position;
     if (!esriWaybackControl) return;
     app.removeMapControl(esriWaybackControl);
@@ -108,18 +95,37 @@ function detachStoreSync(control: EsriWaybackControl): void {
   }
 }
 
-function syncCurrentWaybackLayer(
-  control: EsriWaybackControl | null,
-): void {
+// Esri's usage terms require crediting the World Imagery (Wayback) tiles. The
+// upstream control adds its raster source without an `attribution`, so set one
+// so MapLibre's attribution control shows it (see applyWaybackAttribution).
+const ESRI_WAYBACK_ATTRIBUTION =
+  'Powered by <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> — Esri, Maxar, Earthstar Geographics, and the GIS User Community';
+
+type WaybackMap = NonNullable<ReturnType<EsriWaybackControl["getMap"]>>;
+
+/**
+ * Attach Esri's attribution to a Wayback raster source and refresh the map's
+ * attribution control. The upstream control owns the source and adds it without
+ * an `attribution`, so we set it on the live source (which the attribution
+ * control reads) and fire a `sourcedata` metadata event — the control only
+ * re-reads attributions on source-metadata/style changes, never on tile loads.
+ */
+function applyWaybackAttribution(map: WaybackMap, sourceId: string): void {
+  const source = map.getSource(sourceId) as unknown as { attribution?: string } | undefined;
+  if (!source || source.attribution === ESRI_WAYBACK_ATTRIBUTION) return;
+  source.attribution = ESRI_WAYBACK_ATTRIBUTION;
+  map.fire("sourcedata", { sourceDataType: "metadata", sourceId });
+}
+
+function syncCurrentWaybackLayer(control: EsriWaybackControl | null): void {
   const map = control?.getMap();
   const release = control?.getState().selectedRelease;
   if (!map?.getLayer(DEFAULT_LAYER_ID) || !release) return;
+  applyWaybackAttribution(map, DEFAULT_SOURCE_ID);
   addOrUpdateWaybackStoreLayer(createCurrentWaybackStoreLayer(release));
 }
 
-function syncPersistentWaybackLayers(
-  control: EsriWaybackControl | null,
-): void {
+function syncPersistentWaybackLayers(control: EsriWaybackControl | null): void {
   const map = control?.getMap();
   const state = control?.getState();
   if (!map || !state) return;
@@ -128,12 +134,12 @@ function syncPersistentWaybackLayers(
   for (const styleLayer of map.getStyle().layers ?? []) {
     if (!styleLayer.id.startsWith(`${PERSISTENT_LAYER_PREFIX}-`)) continue;
     activePersistentIds.add(styleLayer.id);
+    const persistentSourceId = getStyleLayerSourceId(styleLayer);
+    if (persistentSourceId) applyWaybackAttribution(map, persistentSourceId);
     const release = state.releases.find(
       (item) => getPersistentWaybackLayerId(item) === styleLayer.id,
     );
-    addOrUpdateWaybackStoreLayer(
-      createPersistentWaybackStoreLayer(styleLayer, release),
-    );
+    addOrUpdateWaybackStoreLayer(createPersistentWaybackStoreLayer(styleLayer, release));
   }
 
   const store = useAppStore.getState();
@@ -174,8 +180,7 @@ function shouldUpdateWaybackStoreLayer(
   return (
     existingLayer.name !== nextLayer.name ||
     existingLayer.sourcePath !== nextLayer.sourcePath ||
-    JSON.stringify(existingLayer.metadata) !==
-      JSON.stringify(nextLayer.metadata) ||
+    JSON.stringify(existingLayer.metadata) !== JSON.stringify(nextLayer.metadata) ||
     JSON.stringify(existingLayer.source) !== JSON.stringify(nextLayer.source)
   );
 }
@@ -187,9 +192,7 @@ function removeCurrentWaybackStoreLayer(): void {
   }
 }
 
-function createCurrentWaybackStoreLayer(
-  release: EsriWaybackRelease,
-): GeoLibreLayer {
+function createCurrentWaybackStoreLayer(release: EsriWaybackRelease): GeoLibreLayer {
   return createWaybackStoreLayer({
     id: DEFAULT_LAYER_ID,
     name: `Esri Wayback ${release.releaseDateLabel}`,
@@ -254,14 +257,10 @@ function createWaybackStoreLayer(options: {
 }
 
 function getStyleLayerSourceId(layer: LayerSpecification): string | undefined {
-  return "source" in layer && typeof layer.source === "string"
-    ? layer.source
-    : undefined;
+  return "source" in layer && typeof layer.source === "string" ? layer.source : undefined;
 }
 
 function layerNameFromPersistentWaybackId(layerId: string): string {
-  const label = layerId
-    .replace(`${PERSISTENT_LAYER_PREFIX}-`, "")
-    .replaceAll("-", " ");
+  const label = layerId.replace(`${PERSISTENT_LAYER_PREFIX}-`, "").replaceAll("-", " ");
   return label ? `Esri Wayback ${label}` : "Esri Wayback";
 }

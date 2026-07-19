@@ -121,6 +121,30 @@ describe("project parsing", () => {
     assert.equal(reloaded.preferences.map.projection, "mercator");
   });
 
+  it("round-trips the scale unit preference and defaults unknown values to metric", () => {
+    const base = createEmptyProject("Scale");
+    assert.equal(base.preferences.map.scaleUnit, "metric");
+    const imperial = {
+      ...base,
+      preferences: {
+        ...base.preferences,
+        map: { ...base.preferences.map, scaleUnit: "imperial" as const },
+      },
+    };
+    const reloaded = parseProject(serializeProject(imperial));
+    assert.equal(reloaded.preferences.map.scaleUnit, "imperial");
+    // A hand-edited project with a bogus unit falls back to metric.
+    const bogus = parseProject(
+      JSON.stringify({
+        version: "0.1.0",
+        name: "Bogus",
+        mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+        preferences: { map: { scaleUnit: "furlongs" } },
+      }),
+    );
+    assert.equal(bogus.preferences.map.scaleUnit, "metric");
+  });
+
   it("normalizes a legend config, dropping malformed overrides", () => {
     const project = parseProject(
       JSON.stringify({
@@ -267,9 +291,7 @@ describe("project parsing", () => {
       layers: [],
       preferences: createEmptyProject().preferences,
       // Missing id / no usable steps: normalized away entirely.
-      models: [
-        { id: "", name: "no id", steps: [] },
-      ] as never,
+      models: [{ id: "", name: "no id", steps: [] }] as never,
       metadata: {},
     });
     assert.equal("models" in project, false);
@@ -298,9 +320,7 @@ describe("project parsing", () => {
       metadata: {},
     });
 
-    assert.deepEqual(project.layers[0].source.tiles, [
-      "https://tiles.example.com/{z}/{x}/{y}.png",
-    ]);
+    assert.deepEqual(project.layers[0].source.tiles, ["https://tiles.example.com/{z}/{x}/{y}.png"]);
     assert.equal(project.layers[0].source.url, "https://tiles.example.com/{z}/{x}/{y}.png");
     assert.equal("resolvedUrl" in project.layers[0].metadata, false);
   });
@@ -515,6 +535,51 @@ describe("multi-map grid persistence", () => {
     assert.equal(reparsed.primaryMapLabel, "2020");
   });
 
+  it("round-trips a secondary pane's 3D-globe viewKind", () => {
+    const secondaryMapViews = [
+      {
+        id: "globe",
+        view: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+        viewKind: "cesium" as const,
+        layerVisibility: {},
+      },
+    ];
+    const project = projectFromStore({
+      projectName: "Globe",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [],
+      preferences: createEmptyProject().preferences,
+      mapLayout: { rows: 1, cols: 2, syncView: true },
+      secondaryMapViews,
+      primaryMapLabel: "",
+      metadata: {},
+    });
+    const reparsed = parseProject(serializeProject(project));
+    assert.equal(reparsed.secondaryMapViews?.[0].viewKind, "cesium");
+  });
+
+  it("drops an unknown viewKind so the pane defaults to the 2D map", () => {
+    const reparsed = parseProject(
+      JSON.stringify({
+        version: "0.2.0",
+        name: "Bad kind",
+        mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+        mapLayout: { rows: 1, cols: 2, syncView: true },
+        secondaryMapViews: [
+          {
+            id: "a",
+            view: { center: [1, 1], zoom: 3, bearing: 0, pitch: 0 },
+            viewKind: "webgpu",
+          },
+        ],
+      }),
+    );
+    assert.equal(reparsed.secondaryMapViews?.[0].viewKind, undefined);
+  });
+
   it("reconciles surplus secondary panes down to rows * cols - 1", () => {
     const reparsed = parseProject(
       JSON.stringify({
@@ -542,9 +607,7 @@ describe("multi-map grid persistence", () => {
         mapView: { center: [7, 8], zoom: 6, bearing: 0, pitch: 0 },
         basemapStyleUrl: "https://tiles.openfreemap.org/styles/dark",
         mapLayout: { rows: 2, cols: 2, syncView: true },
-        secondaryMapViews: [
-          { id: "a", view: { center: [1, 1], zoom: 3, bearing: 0, pitch: 0 } },
-        ],
+        secondaryMapViews: [{ id: "a", view: { center: [1, 1], zoom: 3, bearing: 0, pitch: 0 } }],
       }),
     );
     // A 2x2 grid needs three secondary panes; the two missing ones clone primary.
@@ -693,9 +756,7 @@ describe("story maps", () => {
           chapters: [
             chapter({
               id: "dup",
-              onChapterEnter: [
-                { layerId: "a", opacity: 1, duration: -500 },
-              ],
+              onChapterEnter: [{ layerId: "a", opacity: 1, duration: -500 }],
             }),
             chapter({ id: "dup", title: "Duplicate id" }),
             chapter({ id: "unique" }),
@@ -743,9 +804,7 @@ describe("story maps", () => {
       mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
     };
     // No chapters and all-default settings -> dropped.
-    const empty = parseProject(
-      JSON.stringify({ ...base, storymap: { chapters: [] } }),
-    );
+    const empty = parseProject(JSON.stringify({ ...base, storymap: { chapters: [] } }));
     assert.equal(empty.storymap, undefined);
     // No chapters but an author-entered title -> kept (settings preserved).
     const settingsOnly = parseProject(
@@ -779,9 +838,7 @@ describe("story maps", () => {
     assert.equal(project.storymap.endSlide, "none");
 
     // Defaults when omitted.
-    const defaults = parseProject(
-      JSON.stringify({ ...base, storymap: { chapters: [chapter()] } }),
-    );
+    const defaults = parseProject(JSON.stringify({ ...base, storymap: { chapters: [chapter()] } }));
     assert.equal(defaults.storymap?.hideChapterNav, false);
     assert.equal(defaults.storymap?.startSlide, "none");
     assert.equal(defaults.storymap?.endSlide, "none");
@@ -937,10 +994,7 @@ describe("story map import/export", () => {
     const restored = parseStoryMapCsv(csv, base);
     assert.equal(restored.title, "Kept Title");
     assert.equal(restored.chapters.length, 5);
-    assert.deepEqual(
-      restored.chapters[0].location.center,
-      sample.chapters[0].location.center,
-    );
+    assert.deepEqual(restored.chapters[0].location.center, sample.chapters[0].location.center);
   });
 
   it("imports hand-authored CSV with reordered columns and missing ids", () => {
@@ -998,17 +1052,11 @@ describe("story map import/export", () => {
     useAppStore.getState().setMapGrid(1, 2);
     const paneId = useAppStore.getState().secondaryMapViews[0].id;
 
-    useAppStore
-      .getState()
-      .setSecondaryMapView(paneId, { zoom: 9, center: [5, 6] });
-    useAppStore
-      .getState()
-      .setSecondaryLayerVisibility(paneId, "layer-a", false);
+    useAppStore.getState().setSecondaryMapView(paneId, { zoom: 9, center: [5, 6] });
+    useAppStore.getState().setSecondaryLayerVisibility(paneId, "layer-a", false);
     useAppStore.getState().setSecondaryLayerVisibility(paneId, "layer-b", true);
 
-    const pane = useAppStore
-      .getState()
-      .secondaryMapViews.find((p) => p.id === paneId);
+    const pane = useAppStore.getState().secondaryMapViews.find((p) => p.id === paneId);
     assert.equal(pane?.view.zoom, 9);
     assert.deepEqual(pane?.view.center, [5, 6]);
     assert.deepEqual(pane?.layerVisibility, {
@@ -1025,10 +1073,7 @@ describe("story map import/export", () => {
     useAppStore.getState().setSecondaryMapLabel(paneId, "After");
 
     assert.equal(useAppStore.getState().primaryMapLabel, "Before");
-    assert.equal(
-      useAppStore.getState().secondaryMapViews[0].label,
-      "After",
-    );
+    assert.equal(useAppStore.getState().secondaryMapViews[0].label, "After");
   });
 
   it("removes a secondary pane and collapses the grid", () => {
@@ -1081,7 +1126,13 @@ describe("annotation layer persistence", () => {
                   stroke: "#ef4444",
                   "stroke-width": 3,
                 },
-                geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] },
+                geometry: {
+                  type: "LineString",
+                  coordinates: [
+                    [0, 0],
+                    [1, 1],
+                  ],
+                },
               },
               {
                 type: "Feature",
@@ -1093,7 +1144,14 @@ describe("annotation layer persistence", () => {
                 },
                 geometry: {
                   type: "Polygon",
-                  coordinates: [[[1, 1], [0.9, 1.1], [1.1, 0.9], [1, 1]]],
+                  coordinates: [
+                    [
+                      [1, 1],
+                      [0.9, 1.1],
+                      [1.1, 0.9],
+                      [1, 1],
+                    ],
+                  ],
                 },
               },
             ],

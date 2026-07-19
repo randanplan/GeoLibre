@@ -19,7 +19,8 @@ import {
 } from "@geolibre/core";
 import type { MapController } from "@geolibre/map";
 import { Input } from "@geolibre/ui";
-import { Loader2, MapPin, Search, X } from "lucide-react";
+import { Loader2, LocateFixed, MapPin, Search, X } from "lucide-react";
+import { formatLatLon, parseLatLon } from "../../lib/coordinates";
 
 interface LayerPanelPlaceSearchProps {
   mapControllerRef: RefObject<MapController | null>;
@@ -49,6 +50,9 @@ export function LayerPanelPlaceSearch({
   const geocodingPrefs = useAppStore((s) => s.preferences.geocoding);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GeocodeMatch[]>([]);
+  // True when the single result is a parsed lat/lon jump rather than a geocoder
+  // match, so the row is labeled and iconed as a coordinate instead of a place.
+  const [isCoordinate, setIsCoordinate] = useState(false);
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<SearchStatus>("idle");
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -84,6 +88,7 @@ export function LayerPanelPlaceSearch({
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
+      setIsCoordinate(false);
       setStatus("loading");
       setActiveIndex(-1);
       setOpen(true);
@@ -116,8 +121,25 @@ export function LayerPanelPlaceSearch({
       abortRef.current?.abort();
       setResults([]);
       setActiveIndex(-1);
+      setIsCoordinate(false);
       setStatus("idle");
       setOpen(false);
+      return;
+    }
+    // Coordinate short-circuit: a query that parses as lat/lon (DD, DMS, or DDM)
+    // becomes a direct "go to coordinate" jump, resolved instantly with no
+    // geocoder round-trip so the exact point (not the nearest named place) is
+    // used. Cancel any in-flight forward-geocode from a previous keystroke.
+    const coord = parseLatLon(trimmed);
+    if (coord) {
+      abortRef.current?.abort();
+      setResults([
+        { lat: coord.lat, lon: coord.lon, displayName: formatLatLon(coord), score: null },
+      ]);
+      setActiveIndex(0);
+      setIsCoordinate(true);
+      setStatus("idle");
+      setOpen(true);
       return;
     }
     const handle = setTimeout(() => {
@@ -146,6 +168,7 @@ export function LayerPanelPlaceSearch({
       setQuery(match.displayName);
       setResults([]);
       setActiveIndex(-1);
+      setIsCoordinate(false);
       setStatus("idle");
       setOpen(false);
     },
@@ -159,6 +182,7 @@ export function LayerPanelPlaceSearch({
     setQuery("");
     setResults([]);
     setActiveIndex(-1);
+    setIsCoordinate(false);
     setStatus("idle");
     setOpen(false);
   }, []);
@@ -191,7 +215,7 @@ export function LayerPanelPlaceSearch({
                     role="option"
                     aria-selected={index === activeIndex}
                     id={`${resultsId}-option-${index}`}
-                    className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted ${
+                    className={`flex w-full items-start gap-2 px-3 py-1.5 text-start text-xs hover:bg-muted ${
                       index === activeIndex ? "bg-muted" : ""
                     }`}
                     // Use mousedown so the selection runs before the input's
@@ -202,8 +226,18 @@ export function LayerPanelPlaceSearch({
                     }}
                     onMouseEnter={() => setActiveIndex(index)}
                   >
-                    <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="line-clamp-2">{match.displayName}</span>
+                    {isCoordinate ? (
+                      <LocateFixed className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="line-clamp-2">
+                      {isCoordinate
+                        ? t("layers.searchPlacesGoToCoordinate", {
+                            coordinate: match.displayName,
+                          })
+                        : match.displayName}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -212,7 +246,7 @@ export function LayerPanelPlaceSearch({
         </div>
       ) : null}
       <div className="relative">
-        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Search className="pointer-events-none absolute start-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           type="text"
           role="combobox"
@@ -220,14 +254,12 @@ export function LayerPanelPlaceSearch({
           aria-autocomplete="list"
           aria-controls={showResults ? resultsId : undefined}
           aria-activedescendant={
-            showResults && activeIndex >= 0
-              ? `${resultsId}-option-${activeIndex}`
-              : undefined
+            showResults && activeIndex >= 0 ? `${resultsId}-option-${activeIndex}` : undefined
           }
           value={query}
           placeholder={t("layers.searchPlacesPlaceholder")}
           aria-label={t("layers.searchPlaces")}
-          className="h-8 pl-7 pr-7 text-xs"
+          className="h-8 ps-7 pe-7 text-xs"
           onChange={(event) => setQuery(event.target.value)}
           onFocus={() => {
             if (results.length > 0 || status !== "idle") setOpen(true);
@@ -257,7 +289,7 @@ export function LayerPanelPlaceSearch({
         {query ? (
           <button
             type="button"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="absolute end-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             aria-label={t("layers.searchPlacesClear")}
             title={t("layers.searchPlacesClear")}
             onClick={handleClear}

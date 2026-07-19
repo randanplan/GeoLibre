@@ -11,9 +11,18 @@
  *  - as bare identifiers when the field name is a valid JS identifier (`pop`),
  *  - always through the `props` object so fields with spaces/punctuation are
  *    reachable as `props["my field"]`.
- * A curated set of helper functions and the `$index` (row position) variable
- * are also in scope.
+ * A curated set of helper functions, the `$index` (row position) variable, and
+ * the geometry helpers `$length`/`$perimeter`/`$area` (which measure the
+ * feature's own geometry) are also in scope.
  */
+import type { Geometry } from "geojson";
+import {
+  measureArea,
+  measureLength,
+  measurePerimeter,
+  type AreaUnit,
+  type DistanceUnit,
+} from "./geometry-measure";
 
 /** A helper exposed to expressions by name. */
 type Helper = (...args: unknown[]) => unknown;
@@ -78,9 +87,7 @@ export const EXPRESSION_HELPERS: Record<string, Helper> = {
   replace: (x, search, replacement) => {
     const str = x == null ? "" : String(x);
     if (search == null) return str;
-    return str
-      .split(String(search))
-      .join(replacement == null ? "" : String(replacement));
+    return str.split(String(search)).join(replacement == null ? "" : String(replacement));
   },
   // Logic
   isNull: (x) => isNullish(x),
@@ -96,8 +103,7 @@ export const EXPRESSION_HELPERS: Record<string, Helper> = {
   // Note: unlike SQL CASE or a ternary, all three arguments are evaluated before
   // iif() runs — use a ternary when a branch may throw (e.g. null-property
   // access: `obj != null ? obj.child : "default"`).
-  iif: (condition, thenValue, elseValue) =>
-    condition ? thenValue : elseValue,
+  iif: (condition, thenValue, elseValue) => (condition ? thenValue : elseValue),
 };
 
 /** Math constants exposed as bare identifiers. */
@@ -106,10 +112,39 @@ const EXPRESSION_CONSTANTS: Record<string, number> = {
   E: Math.E,
 };
 
+/**
+ * Geometry helper names, in scope as functions bound to each feature's own
+ * geometry: `$length(unit)` / `$perimeter(unit)` measure a line or a polygon's
+ * boundary (default meters); `$area(unit)` measures a polygon (default square
+ * meters). Units mirror the Measure tool — e.g. `$area("hectares")`,
+ * `$length("kilometers")`. Non-matching geometries return 0.
+ */
+export const GEOMETRY_HELPER_NAMES = ["$length", "$perimeter", "$area"] as const;
+
+/** A mutable slot the geometry helpers read, updated once per evaluated row. */
+interface GeometryHolder {
+  geometry: Geometry | null | undefined;
+}
+
+/**
+ * Build the geometry helpers for a compiled expression. They close over a
+ * mutable holder (updated once per row) rather than over the geometry itself, so
+ * the three closures are allocated once per compile instead of once per feature
+ * during a bulk `calculateField` run.
+ */
+function createGeometryHelpers(holder: GeometryHolder): Helper[] {
+  return [
+    (unit) => measureLength(holder.geometry, unit as DistanceUnit | undefined),
+    (unit) => measurePerimeter(holder.geometry, unit as DistanceUnit | undefined),
+    (unit) => measureArea(holder.geometry, unit as AreaUnit | undefined),
+  ];
+}
+
 /** Names that are always in scope and therefore cannot be used as field idents. */
 const RESERVED_NAMES = new Set<string>([
   ...Object.keys(EXPRESSION_HELPERS),
   ...Object.keys(EXPRESSION_CONSTANTS),
+  ...GEOMETRY_HELPER_NAMES,
   "props",
   "$index",
 ]);
@@ -122,19 +157,60 @@ const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 // names are common in OSM data — must fall back to the `props["name"]` path,
 // otherwise compiling ANY expression for that layer throws a SyntaxError.
 const JS_KEYWORDS = new Set([
-  "break", "case", "catch", "class", "const", "continue", "debugger",
-  "default", "delete", "do", "else", "export", "extends", "false", "finally",
-  "for", "function", "if", "import", "in", "instanceof", "new", "null",
-  "return", "super", "switch", "this", "throw", "true", "try", "typeof",
-  "var", "void", "while", "with", "yield",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
   // strict-mode future-reserved words and restricted names
-  "let", "static", "implements", "interface", "package", "private",
-  "protected", "public", "eval", "arguments",
+  "let",
+  "static",
+  "implements",
+  "interface",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "eval",
+  "arguments",
   // future-reserved in all modes
   "enum",
   // global constants — not reserved words, but as bare params they would
   // silently shadow the JS globals (e.g. a field named `NaN`).
-  "undefined", "NaN", "Infinity",
+  "undefined",
+  "NaN",
+  "Infinity",
 ]);
 
 /**
@@ -144,11 +220,7 @@ const JS_KEYWORDS = new Set([
  * neither a helper is shadowed nor the parser is broken.
  */
 export function isBareIdentifier(name: string): boolean {
-  return (
-    IDENTIFIER_RE.test(name) &&
-    !RESERVED_NAMES.has(name) &&
-    !JS_KEYWORDS.has(name)
-  );
+  return IDENTIFIER_RE.test(name) && !RESERVED_NAMES.has(name) && !JS_KEYWORDS.has(name);
 }
 
 /**
@@ -161,7 +233,7 @@ export function fieldReference(name: string): string {
 
 /** A compiled expression ready to run against each feature's properties. */
 export interface CompiledExpression {
-  evaluate: (props: Record<string, unknown>, index: number) => unknown;
+  evaluate: (props: Record<string, unknown>, index: number, geometry?: Geometry | null) => unknown;
 }
 
 /**
@@ -169,10 +241,7 @@ export interface CompiledExpression {
  * SyntaxError (with a readable message) when the expression cannot be parsed, so
  * callers can surface the problem before touching any feature.
  */
-export function compileExpression(
-  expression: string,
-  fieldNames: string[],
-): CompiledExpression {
+export function compileExpression(expression: string, fieldNames: string[]): CompiledExpression {
   const trimmed = expression.trim();
   if (trimmed === "") {
     throw new SyntaxError("Expression is empty.");
@@ -185,6 +254,7 @@ export function compileExpression(
     ...bareFields,
     ...helperNames,
     ...constantNames,
+    ...GEOMETRY_HELPER_NAMES,
     "props",
     "$index",
   ];
@@ -197,26 +267,29 @@ export function compileExpression(
     // here only because calculations run immediately and the expression itself
     // is never persisted or re-evaluated from a project file.
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    fn = new Function(
-      ...argNames,
-      `"use strict"; return (${trimmed});`,
-    ) as (...args: unknown[]) => unknown;
+    fn = new Function(...argNames, `"use strict"; return (${trimmed});`) as (
+      ...args: unknown[]
+    ) => unknown;
   } catch (error) {
-    throw new SyntaxError(
-      error instanceof Error ? error.message : "Invalid expression.",
-    );
+    throw new SyntaxError(error instanceof Error ? error.message : "Invalid expression.");
   }
 
   const helperValues = helperNames.map((name) => EXPRESSION_HELPERS[name]);
   const constantValues = constantNames.map((name) => EXPRESSION_CONSTANTS[name]);
+  // Allocate the geometry helpers once and feed each row's geometry through a
+  // shared holder, so a bulk calculation doesn't rebuild them per feature.
+  const geometryHolder: GeometryHolder = { geometry: null };
+  const geometryHelperValues = createGeometryHelpers(geometryHolder);
 
   return {
-    evaluate(props, index) {
+    evaluate(props, index, geometry) {
+      geometryHolder.geometry = geometry ?? null;
       const fieldValues = bareFields.map((name) => props[name]);
       return fn(
         ...fieldValues,
         ...helperValues,
         ...constantValues,
+        ...geometryHelperValues,
         props,
         index,
       );
@@ -233,10 +306,7 @@ export type CalcOutputType = "auto" | "text" | "number" | "boolean";
  * represented in the target type — a non-finite number, an unparseable text →
  * number — becomes null so a calculation never persists a type-corrupted cell.
  */
-export function coerceComputedValue(
-  value: unknown,
-  type: CalcOutputType,
-): unknown {
+export function coerceComputedValue(value: unknown, type: CalcOutputType): unknown {
   if (value === undefined) return null;
   if (type === "auto") {
     // Normalize the JS "no result" values to null for a clean cell.

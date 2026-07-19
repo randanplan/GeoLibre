@@ -19,15 +19,9 @@ import {
 } from "@geolibre/ui";
 import type { FeatureCollection } from "geojson";
 import { Loader2, Play } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
+import { beginProcessingRun, type ProcessingRunTracker } from "../../lib/processing-history";
 import { ParameterField } from "./ParameterField";
 
 interface NetworkToolsDialogProps {
@@ -42,32 +36,29 @@ interface NetworkToolsDialogProps {
  *
  * @param props.mapControllerRef - Map controller, used to zoom to result layers.
  */
-export function NetworkToolsDialog({
-  mapControllerRef,
-}: NetworkToolsDialogProps): ReactElement {
+export function NetworkToolsDialog({ mapControllerRef }: NetworkToolsDialogProps): ReactElement {
   const { t } = useTranslation();
   const openTool = useAppStore((s) => s.ui.networkToolOpen);
   const setNetworkToolOpen = useAppStore((s) => s.setNetworkToolOpen);
   const layers = useAppStore((s) => s.layers);
   const addGeoJsonLayer = useAppStore((s) => s.addGeoJsonLayer);
+  const rerun = useAppStore((s) => s.ui.processingRerun);
+  const setProcessingRerun = useAppStore((s) => s.setProcessingRerun);
 
   const open = openTool !== null;
-  const [selectedId, setSelectedId] = useState<string>(
-    openTool ?? NETWORK_TOOLS[0].id,
-  );
+  const [selectedId, setSelectedId] = useState<string>(openTool ?? NETWORK_TOOLS[0].id);
   const [params, setParams] = useState<Record<string, unknown>>({});
   const [log, setLog] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [autoRunPending, setAutoRunPending] = useState(false);
+  const runTrackerRef = useRef<ProcessingRunTracker | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   // Cancels the in-flight run (and any pending routing requests) when the
   // dialog closes or a new run starts, so closing the dialog mid-batch does not
   // keep hitting the server and silently adding result layers.
   const abortRef = useRef<AbortController | null>(null);
 
-  const tool = useMemo(
-    () => getNetworkTool(selectedId) ?? NETWORK_TOOLS[0],
-    [selectedId],
-  );
+  const tool = useMemo(() => getNetworkTool(selectedId) ?? NETWORK_TOOLS[0], [selectedId]);
 
   // When the menu opens the dialog with a specific tool, preselect it.
   useEffect(() => {
@@ -87,15 +78,42 @@ export function NetworkToolsDialog({
     setLog([]);
   }, [tool]);
 
+  // Pre-fill from a pending History re-run once the requested tool is selected.
+  // Declared after the defaults-reset effect above so the recorded parameters
+  // win over the defaults when both effects fire in the same commit.
+  useEffect(() => {
+    if (!open || !rerun || rerun.kind !== "network") return;
+    // A saved-project history entry can reference a tool that was renamed or
+    // removed since; drop the request instead of leaving it pending forever.
+    if (!getNetworkTool(rerun.toolId)) {
+      setLog((prev) => [
+        ...prev,
+        `Error: ${t("processing.history.toolUnavailable", { toolId: rerun.toolId })}`,
+      ]);
+      setProcessingRerun(null);
+      return;
+    }
+    if (rerun.toolId !== tool.id) return;
+    setParams({ ...rerun.parameters });
+    setProcessingRerun(null);
+    if (rerun.autoRun) setAutoRunPending(true);
+  }, [open, rerun, tool, setProcessingRerun, t]);
+
   // Keep the newest log lines in view as they stream in.
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ block: "end" });
   }, [log]);
 
-  const appendLog = useCallback(
-    (message: string) => setLog((prev) => [...prev, message]),
-    [],
-  );
+  // Client tools report validation failures via ctx.log("Error: ...") plus a
+  // plain return rather than throwing; capture the last such line so the run
+  // is recorded as failed in the Processing History (#1292). Reset per run.
+  const softErrorRef = useRef<string | null>(null);
+  const appendLog = useCallback((message: string) => {
+    if (message.startsWith("Error:")) {
+      softErrorRef.current = message.slice("Error:".length).trim();
+    }
+    setLog((prev) => [...prev, message]);
+  }, []);
 
   const layerOptions = useCallback(
     (filter?: GeometryFamily[]) =>
@@ -135,9 +153,7 @@ export function NetworkToolsDialog({
   // chosen in its `fieldSource` parameter (default "layer").
   const fieldOptions = useCallback(
     (param: AlgorithmParameter): string[] => {
-      const sourceId = params[param.fieldSource ?? "layer"] as
-        | string
-        | undefined;
+      const sourceId = params[param.fieldSource ?? "layer"] as string | undefined;
       return (sourceId && fieldsByLayer.get(sourceId)) || [];
     },
     [fieldsByLayer, params],
@@ -150,9 +166,8 @@ export function NetworkToolsDialog({
         return;
       }
       const layerId = addGeoJsonLayer(name, fc);
-      const layer = useAppStore
-        .getState()
-        .layers.find((item) => item.id === layerId);
+      runTrackerRef.current?.addOutputLayer(name);
+      const layer = useAppStore.getState().layers.find((item) => item.id === layerId);
       if (layer) mapControllerRef.current?.fitLayer(layer);
     },
     [addGeoJsonLayer, appendLog, mapControllerRef],
@@ -178,6 +193,7 @@ export function NetworkToolsDialog({
 
   const handleRun = useCallback(async () => {
     setLog([]);
+    softErrorRef.current = null;
     for (const param of tool.parameters) {
       if (!param.required) continue;
       const value = params[param.id];
@@ -185,9 +201,7 @@ export function NetworkToolsDialog({
         value === undefined ||
         value === "" ||
         value === null ||
-        (param.type === "number" &&
-          typeof value === "number" &&
-          Number.isNaN(value))
+        (param.type === "number" && typeof value === "number" && Number.isNaN(value))
       ) {
         appendLog(`Error: "${param.label}" is required`);
         return;
@@ -197,6 +211,14 @@ export function NetworkToolsDialog({
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const tracker = beginProcessingRun({
+      kind: "network",
+      toolId: tool.id,
+      toolName: tool.name,
+      engine: "client",
+      parameters: params,
+    });
+    runTrackerRef.current = tracker;
     setRunning(true);
     try {
       const ctx: ProcessingContext = {
@@ -208,13 +230,35 @@ export function NetworkToolsDialog({
         signal: controller.signal,
       };
       await tool.run(ctx);
+      // A logged "Error: ..." line marks a soft failure (the client tools
+      // bail out without throwing); don't record those as successes.
+      if (softErrorRef.current) tracker.finish("error", softErrorRef.current);
+      else tracker.finish("success");
     } catch (error) {
+      // A user-initiated cancel (closing the dialog or starting a new run)
+      // rejects with an AbortError; that is not a failed run, so don't log it
+      // or record it in the Processing History.
+      if (controller.signal.aborted) return;
       appendLog(`Error: ${(error as Error).message}`);
+      tracker.finish("error", (error as Error).message);
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setRunning(false);
     }
   }, [tool, params, layers, appendLog, addResultLayer, mapControllerRef]);
+
+  // Auto-run for a History "Re-run": kick off handleRun on the render after the
+  // pre-fill effect committed the recorded parameters. The ref always points at
+  // the latest handleRun closure, so the run sees the pre-filled state.
+  const handleRunRef = useRef(handleRun);
+  useEffect(() => {
+    handleRunRef.current = handleRun;
+  });
+  useEffect(() => {
+    if (!autoRunPending) return;
+    setAutoRunPending(false);
+    void handleRunRef.current();
+  }, [autoRunPending]);
 
   const endpoint = (params.endpoint as string) || getRoutingConfig().endpoint;
 
@@ -248,9 +292,8 @@ export function NetworkToolsDialog({
                   type="button"
                   onClick={() => setSelectedId(entry.id)}
                   className={cn(
-                    "w-full rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                    entry.id === selectedId &&
-                      "bg-accent font-medium text-accent-foreground",
+                    "w-full rounded-md px-2 py-1.5 text-start text-sm transition-colors hover:bg-accent",
+                    entry.id === selectedId && "bg-accent font-medium text-accent-foreground",
                   )}
                 >
                   {entry.name}
@@ -270,9 +313,7 @@ export function NetworkToolsDialog({
                   param={param}
                   value={params[param.id]}
                   layerOptions={layerOptions(param.geometryFilter)}
-                  fieldOptions={
-                    param.type === "field" ? fieldOptions(param) : undefined
-                  }
+                  fieldOptions={param.type === "field" ? fieldOptions(param) : undefined}
                   onChange={(value) => handleParamChange(param.id, value)}
                 />
               ))}
@@ -295,9 +336,7 @@ export function NetworkToolsDialog({
 
             <ScrollArea className="h-24 rounded-md border bg-muted/30 p-2 font-mono text-xs">
               {log.length === 0 ? (
-                <span className="text-muted-foreground">
-                  {t("network.outputPlaceholder")}
-                </span>
+                <span className="text-muted-foreground">{t("network.outputPlaceholder")}</span>
               ) : (
                 log.map((line, index) => (
                   <div key={index} className="whitespace-pre-wrap">

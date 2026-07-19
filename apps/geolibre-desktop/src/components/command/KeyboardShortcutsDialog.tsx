@@ -1,10 +1,4 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@geolibre/ui";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@geolibre/ui";
 import { useMemo } from "react";
 import {
   type Command,
@@ -24,8 +18,24 @@ interface KeyboardShortcutsDialogProps {
 interface ShortcutRow {
   id: string;
   label: string;
-  shortcut: Shortcut;
+  /** A command-style shortcut, formatted per platform. */
+  shortcut?: Shortcut;
+  /** A pre-rendered key label, for keys handled natively by MapLibre. */
+  display?: string;
 }
+
+/**
+ * Map navigation keys handled by MapLibre's own keyboard interaction (not the
+ * command registry), listed for discoverability. These mirror Google Earth's
+ * navigation keys and only work while the map canvas has focus.
+ */
+const MAP_NAVIGATION_ROWS: ShortcutRow[] = [
+  { id: "nav.zoom-in", label: "Zoom in", display: "+" },
+  { id: "nav.zoom-out", label: "Zoom out", display: "−" },
+  { id: "nav.pan", label: "Pan", display: "← ↑ ↓ →" },
+  { id: "nav.rotate", label: "Rotate", display: "⇧ ← / →" },
+  { id: "nav.tilt", label: "Tilt", display: "⇧ ↑ / ↓" },
+];
 
 /**
  * A cheat sheet (opened with `?`) listing every global keyboard shortcut,
@@ -73,6 +83,11 @@ export function KeyboardShortcutsDialog({
         });
       }
     }
+
+    // Append the MapLibre-native navigation keys as a final, display-only group.
+    for (const row of MAP_NAVIGATION_ROWS) {
+      pushRow("Map navigation", row);
+    }
     return ordered;
   }, [commands]);
 
@@ -82,25 +97,20 @@ export function KeyboardShortcutsDialog({
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
           <DialogDescription>
-            Press {formatShortcut(PALETTE_SHORTCUT, isMac)} to search every
-            action in the command palette.
+            Press {formatShortcut(PALETTE_SHORTCUT, isMac)} to search every action in the command
+            palette.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           {groups.map(({ group, rows }) => (
             <div key={group} className="space-y-1.5">
-              <p className="text-xs font-medium text-muted-foreground">
-                {group}
-              </p>
+              <p className="text-xs font-medium text-muted-foreground">{group}</p>
               <ul className="space-y-1">
                 {rows.map((row) => (
-                  <li
-                    key={row.id}
-                    className="flex items-center justify-between gap-4 text-sm"
-                  >
+                  <li key={row.id} className="flex items-center justify-between gap-4 text-sm">
                     <span className="min-w-0 truncate">{row.label}</span>
                     <kbd className="shrink-0 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                      {formatShortcut(row.shortcut, isMac)}
+                      {row.shortcut ? formatShortcut(row.shortcut, isMac) : row.display}
                     </kbd>
                   </li>
                 ))}

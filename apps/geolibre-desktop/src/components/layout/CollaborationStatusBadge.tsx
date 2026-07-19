@@ -40,10 +40,7 @@ const MIN_CHAT_SEND_INTERVAL_MS = 250;
  * above the MapLibre scale control (and the bounds-restriction badge when it is
  * showing); the roster and announcements grow upward from the collapsed pill.
  */
-export function CollaborationStatusBadge({
-  api,
-  mapControllerRef,
-}: CollaborationStatusBadgeProps) {
+export function CollaborationStatusBadge({ api, mapControllerRef }: CollaborationStatusBadgeProps) {
   const { t } = useTranslation();
   // Narrow selectors rather than the whole `collaboration` slice: remote cursor
   // presence updates that slice many times per second, and subscribing to the
@@ -66,12 +63,12 @@ export function CollaborationStatusBadge({
   // (and, since it renders inside the map's error boundary, the whole map).
   const chat = useAppStore((s) => s.collaboration.chat) ?? [];
   const isHost = role === "host";
-  const setCollaborateDialogOpen = useAppStore(
-    (s) => s.setCollaborateDialogOpen,
-  );
+  const setCollaborateDialogOpen = useAppStore((s) => s.setCollaborateDialogOpen);
   // Shares the bottom-left corner with the MapLibre scale control and the
   // bounds-restriction badge, so lift the badge above whichever of those is
-  // showing (see the positioning note below).
+  // showing (see the positioning note below). The KnowledgeCardPanel also opens
+  // in this corner, but as a large transient z-20 panel it overlays this z-10
+  // badge while open rather than participating in this stacking.
   const restrictBounds = useAppStore((s) => s.preferences.map.restrictBounds);
 
   const [expanded, setExpanded] = useState(false);
@@ -131,9 +128,7 @@ export function CollaborationStatusBadge({
       lastSeenChatIdRef.current = undefined;
       return;
     }
-    const current = new Map(
-      participants.map((p) => [p.clientId, p.displayName]),
-    );
+    const current = new Map(participants.map((p) => [p.clientId, p.displayName]));
     const known = knownRef.current;
     knownRef.current = current;
     const prevSelfId = prevSelfIdRef.current;
@@ -247,10 +242,7 @@ export function CollaborationStatusBadge({
       attachLocation && mapControllerRef.current
         ? mapControllerRef.current.getMap()?.getCenter()
         : null;
-    const sent = api.sendChat(
-      text,
-      center ? { lng: center.lng, lat: center.lat } : null,
-    );
+    const sent = api.sendChat(text, center ? { lng: center.lng, lat: center.lat } : null);
     // Only clear the composer (and stamp the floor) when the message actually
     // reached an open socket; otherwise keep the draft so a transient
     // disconnect doesn't lose it.
@@ -261,9 +253,7 @@ export function CollaborationStatusBadge({
   };
 
   const flyToCoordinate = (coordinate: { lng: number; lat: number }) => {
-    mapControllerRef.current
-      ?.getMap()
-      ?.flyTo({ center: [coordinate.lng, coordinate.lat] });
+    mapControllerRef.current?.getMap()?.flyTo({ center: [coordinate.lng, coordinate.lat] });
   };
 
   if (!isActive) return null;
@@ -282,11 +272,7 @@ export function CollaborationStatusBadge({
           content changes, so screen readers reliably pick up each insertion.
           role="log" (aria-atomic="false") announces only the newly added entry,
           rather than re-reading the whole region the way role="status" would. */}
-      <div
-        className="flex flex-col gap-1"
-        role="log"
-        aria-label={t("collaborate.announcements")}
-      >
+      <div className="flex flex-col gap-1" role="log" aria-label={t("collaborate.announcements")}>
         {announcements.map((a) => (
           <div
             key={a.id}
@@ -354,18 +340,11 @@ export function CollaborationStatusBadge({
                   return (
                     <div key={m.id} className="flex flex-col gap-0.5 text-xs">
                       <div className="flex items-baseline gap-1.5">
-                        <span
-                          className="truncate font-medium"
-                          style={{ color: m.color }}
-                        >
-                          {m.clientId === selfId
-                            ? t("collaborate.you")
-                            : m.displayName}
+                        <span className="truncate font-medium" style={{ color: m.color }}>
+                          {m.clientId === selfId ? t("collaborate.you") : m.displayName}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words text-foreground">
-                        {m.text}
-                      </p>
+                      <p className="whitespace-pre-wrap break-words text-foreground">{m.text}</p>
                       {coord && (
                         <button
                           type="button"
@@ -444,7 +423,7 @@ export function CollaborationStatusBadge({
                 setExpanded(false);
               }}
             >
-              <Settings2 className="mr-2 h-3.5 w-3.5" />
+              <Settings2 className="me-2 h-3.5 w-3.5" />
               {t("collaborate.manageSession")}
             </Button>
           </div>
@@ -469,11 +448,7 @@ export function CollaborationStatusBadge({
               ? t("collaborate.sessionStatusUnread", { count: unread })
               : t("collaborate.sessionStatusTooltip")
         }
-        title={
-          expanded
-            ? t("collaborate.collapseRoster")
-            : t("collaborate.sessionStatusTooltip")
-        }
+        title={expanded ? t("collaborate.collapseRoster") : t("collaborate.sessionStatusTooltip")}
         className="pointer-events-auto flex items-center gap-1.5 self-start rounded-full border bg-background/95 px-2.5 py-1 text-xs font-medium text-foreground shadow-sm backdrop-blur-sm transition hover:bg-accent"
       >
         <span className="relative flex h-2 w-2" aria-hidden="true">
@@ -498,9 +473,7 @@ export function CollaborationStatusBadge({
         {/* The roster grows upward above the pill: point up when collapsed
             ("reveal above"), down when expanded ("collapse"). */}
         <ChevronUp
-          className={`h-3 w-3 transition-transform ${
-            expanded ? "rotate-180" : ""
-          }`}
+          className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`}
           aria-hidden="true"
         />
       </button>

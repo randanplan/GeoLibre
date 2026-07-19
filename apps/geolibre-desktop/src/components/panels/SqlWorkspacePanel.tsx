@@ -1,16 +1,11 @@
 import { useAppStore } from "@geolibre/core";
-import {
-  Button,
-  Input,
-  ScrollArea,
-  Select,
-  cn,
-} from "@geolibre/ui";
+import { Button, Input, ScrollArea, Select, cn } from "@geolibre/ui";
 import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
   Database,
+  DatabaseZap,
   Download,
   Eraser,
   Loader2,
@@ -18,19 +13,10 @@ import {
   Play,
   X,
 } from "lucide-react";
-import {
-  type MouseEvent as ReactMouseEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ParseKeys } from "i18next";
-import {
-  exportBinaryVectorLayer,
-  type BinaryVectorExportResult,
-} from "../../lib/vector-exporter";
+import { exportBinaryVectorLayer, type BinaryVectorExportResult } from "../../lib/vector-exporter";
 import {
   previewLayerColumns,
   resultToCsv,
@@ -40,12 +26,14 @@ import {
 } from "../../lib/sql-workspace";
 import { runPostgisQuery } from "../../lib/pglite-workspace";
 import { runSedonaQuery } from "../../lib/sedona-workspace";
+import { sqlQueryLayerMetadata } from "../../lib/sql-query-layer";
+import {
+  consumePendingSqlWorkspaceQuery,
+  SQL_WORKSPACE_PREFILL_EVENT,
+} from "../../lib/sql-workspace-prefill";
 import { saveBinaryFileWithFallback } from "../../lib/tauri-io";
 import { useSqlCompletion } from "../../lib/useSqlCompletion";
-import {
-  PANEL_RESIZE_END_EVENT,
-  PANEL_RESIZE_START_EVENT,
-} from "../../lib/panel-resize";
+import { PANEL_RESIZE_END_EVENT, PANEL_RESIZE_START_EVENT } from "../../lib/panel-resize";
 
 const CSV_MIME_TYPE = "text/csv";
 
@@ -204,13 +192,11 @@ const MAX_HISTORY_ENTRIES = 25;
 function loadQueryHistory(): string[] {
   if (typeof window === "undefined") return [];
   try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]",
-    );
+    const parsed = JSON.parse(window.localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]");
     return Array.isArray(parsed)
       ? parsed
-        .filter((entry): entry is string => typeof entry === "string")
-        .slice(0, MAX_HISTORY_ENTRIES)
+          .filter((entry): entry is string => typeof entry === "string")
+          .slice(0, MAX_HISTORY_ENTRIES)
       : [];
   } catch {
     return [];
@@ -221,10 +207,10 @@ function loadQueryHistory(): string[] {
 function saveQueryToHistory(history: string[], query: string): string[] {
   const trimmed = query.trim();
   if (!trimmed) return history;
-  const next = [
-    trimmed,
-    ...history.filter((entry) => entry !== trimmed),
-  ].slice(0, MAX_HISTORY_ENTRIES);
+  const next = [trimmed, ...history.filter((entry) => entry !== trimmed)].slice(
+    0,
+    MAX_HISTORY_ENTRIES,
+  );
   if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
@@ -265,6 +251,7 @@ export function SqlWorkspacePanel() {
   const setSqlWorkspaceOpen = useAppStore((s) => s.setSqlWorkspaceOpen);
   const layers = useAppStore((s) => s.layers);
   const addGeoJsonLayer = useAppStore((s) => s.addGeoJsonLayer);
+  const updateLayer = useAppStore((s) => s.updateLayer);
 
   const { t } = useTranslation();
 
@@ -293,20 +280,23 @@ export function SqlWorkspacePanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>(loadQueryHistory);
   const [layerName, setLayerName] = useState("");
+  // The statement (and engine) that produced the current `result`, captured at
+  // run time so "Add as query layer" stores the SQL that was actually executed
+  // even if the editor has been modified since. Set together with setResult.
+  const [lastRun, setLastRun] = useState<{
+    sql: string;
+    engine: SqlEngine;
+  } | null>(null);
 
   // A single pass over the layers supplies both the columns (for autocomplete)
   // and the table names; deriving `tables` from it avoids walking the layers a
   // second time via previewLayerTables. The Sedona engine registers the geometry
   // column as `geometry`; DuckDB and PGlite use `geom`.
   const tableColumns = useMemo(
-    () =>
-      previewLayerColumns(layers, engine === "sedona" ? "geometry" : "geom"),
+    () => previewLayerColumns(layers, engine === "sedona" ? "geometry" : "geom"),
     [layers, engine],
   );
-  const tables = useMemo(
-    () => tableColumns.map((table) => table.tableName),
-    [tableColumns],
-  );
+  const tables = useMemo(() => tableColumns.map((table) => table.tableName), [tableColumns]);
   const sampleQueries =
     engine === "postgis"
       ? POSTGIS_SAMPLE_QUERIES
@@ -335,6 +325,40 @@ export function SqlWorkspacePanel() {
   // Focus the editor when the panel first opens so the user can type at once.
   useEffect(() => {
     editorRef.current?.focus();
+  }, []);
+
+  // Mirror of `sql` for the mount-once prefill listener below, so it can read
+  // the in-progress editor text without re-registering on every keystroke.
+  const sqlRef = useRef(sql);
+  useEffect(() => {
+    sqlRef.current = sql;
+  }, [sql]);
+
+  // Load a query handed off by a SQL query layer's "Edit query in SQL
+  // Workspace" action: consume a parked query on mount (the panel was closed
+  // when it was requested) and apply later requests while mounted via the
+  // prefill event. Query layers are DuckDB-backed, so the engine follows.
+  useEffect(() => {
+    const applyPending = () => {
+      const pending = consumePendingSqlWorkspaceQuery();
+      if (pending === null) return;
+      // Loading the layer's query replaces the editor content, so park any
+      // in-progress statement in History first — the user can recover it from
+      // the History dropdown instead of losing it silently.
+      const inProgress = sqlRef.current.trim();
+      if (inProgress && inProgress !== pending.trim() && inProgress !== SAMPLE_QUERY) {
+        setHistory((current) => saveQueryToHistory(current, inProgress));
+      }
+      setEngine("duckdb");
+      setSql(pending);
+      setResult(null);
+      setError(null);
+      setNotice(null);
+      editorRef.current?.focus();
+    };
+    applyPending();
+    window.addEventListener(SQL_WORKSPACE_PREFILL_EVENT, applyPending);
+    return () => window.removeEventListener(SQL_WORKSPACE_PREFILL_EVENT, applyPending);
   }, []);
 
   // Surface the engine error, and when it is a missing-table error append the
@@ -375,6 +399,7 @@ export function SqlWorkspacePanel() {
             ? await runSedonaQuery(trimmed, layers)
             : await runSqlQuery(trimmed, layers);
       setResult(queryResult);
+      setLastRun({ sql: trimmed, engine });
     } catch (err) {
       setResult(null);
       setError(describeQueryError(err));
@@ -401,18 +426,42 @@ export function SqlWorkspacePanel() {
     if (!result?.geojson) return;
     setError(null);
     const featureCount = result.geojson.features.length;
-    const name =
-      layerName.trim() || `SQL result ${new Date().toLocaleTimeString()}`;
+    const name = layerName.trim() || `SQL result ${new Date().toLocaleTimeString()}`;
     addGeoJsonLayer(name, result.geojson);
+    setNotice(t("toolbar.sqlWorkspace.addedAsLayer", { count: featureCount, name }));
+  };
+
+  // A live query layer only makes sense for a DuckDB result: refresh re-runs
+  // the stored SQL through the DuckDB engine (refreshSqlQueryLayer).
+  const canAddAsQueryLayer = !!result?.geojson && lastRun?.engine === "duckdb";
+
+  // Like handleAddAsLayer, but the executed SQL is stored on the layer so it
+  // can be re-run later (Refresh / auto-refresh in the Layers panel).
+  const handleAddAsQueryLayer = () => {
+    if (!result?.geojson || lastRun?.engine !== "duckdb") return;
+    setError(null);
+    const featureCount = result.geojson.features.length;
+    const name = layerName.trim() || `SQL query ${new Date().toLocaleTimeString()}`;
+    const id = addGeoJsonLayer(name, result.geojson);
+    // updateLayer replaces `metadata` wholesale, so merge onto whatever base
+    // metadata addGeoJsonLayer initialised (read synchronously from the store)
+    // rather than overwriting it.
+    const created = useAppStore.getState().layers.find((layer) => layer.id === id);
+    updateLayer(id, {
+      metadata: {
+        ...created?.metadata,
+        ...sqlQueryLayerMetadata(lastRun.sql),
+      },
+    });
     setNotice(
-      t("toolbar.sqlWorkspace.addedAsLayer", { count: featureCount, name }),
+      t("toolbar.sqlWorkspace.addedAsQueryLayer", {
+        count: featureCount,
+        name,
+      }),
     );
   };
 
-  const saveBinary = async (
-    payload: BinaryVectorExportResult,
-    label: string,
-  ) => {
+  const saveBinary = async (payload: BinaryVectorExportResult, label: string) => {
     const savedName = await saveBinaryFileWithFallback(payload.data, {
       defaultName: `sql-result.${payload.extension}`,
       filters: [{ name: label, extensions: [payload.extension] }],
@@ -424,10 +473,7 @@ export function SqlWorkspacePanel() {
       ],
       mimeType: payload.mimeType,
     });
-    if (savedName)
-      setNotice(
-        t("toolbar.sqlWorkspace.savedAs", { label, name: savedName }),
-      );
+    if (savedName) setNotice(t("toolbar.sqlWorkspace.savedAs", { label, name: savedName }));
   };
 
   const handleExportCsv = async () => {
@@ -461,11 +507,7 @@ export function SqlWorkspacePanel() {
     setNotice(null);
     setExporting(true);
     try {
-      const exported = await exportBinaryVectorLayer(
-        result.geojson,
-        "geoparquet",
-        "SQL result",
-      );
+      const exported = await exportBinaryVectorLayer(result.geojson, "geoparquet", "SQL result");
       // exportBinaryVectorLayer already sets the GeoParquet mimeType.
       await saveBinary(exported, "GeoParquet");
     } catch (err) {
@@ -552,14 +594,15 @@ export function SqlWorkspacePanel() {
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
 
+    const isRtl = getComputedStyle(container).direction === "rtl";
+
     const onMove = (moveEvent: MouseEvent) => {
-      // Editor is the left pane: its width is the gap between the container's
-      // left edge and the cursor.
-      const raw = (moveEvent.clientX - rect.left) / rect.width;
-      nextFraction = Math.min(
-        MAX_EDITOR_FRACTION,
-        Math.max(MIN_EDITOR_FRACTION, raw),
-      );
+      // The editor pane hugs the container's inline-start: its width is the gap
+      // between that edge and the cursor.
+      const raw = isRtl
+        ? (rect.right - moveEvent.clientX) / rect.width
+        : (moveEvent.clientX - rect.left) / rect.width;
+      nextFraction = Math.min(MAX_EDITOR_FRACTION, Math.max(MIN_EDITOR_FRACTION, raw));
       // Throttle to one DOM write per frame; commit to state only on mouseup.
       if (frame !== null) return;
       frame = window.requestAnimationFrame(() => {
@@ -626,16 +669,12 @@ export function SqlWorkspacePanel() {
         <span className="text-sm font-semibold">{t("toolbar.sqlWorkspace.title")}</span>
         <Select
           aria-label={t("toolbar.sqlWorkspace.engine")}
-          className="ml-2 h-7 w-auto text-xs"
+          className="ms-2 h-7 w-auto text-xs"
           value={engine}
           onChange={(event) => {
             const value = event.target.value;
             const next: SqlEngine =
-              value === "postgis"
-                ? "postgis"
-                : value === "sedona"
-                  ? "sedona"
-                  : "duckdb";
+              value === "postgis" ? "postgis" : value === "sedona" ? "sedona" : "duckdb";
             setEngine(next);
             saveEngine(next);
           }}
@@ -650,25 +689,19 @@ export function SqlWorkspacePanel() {
             {t("toolbar.sqlWorkspace.engineOption", { name: "Apache Sedona" })}
           </option>
         </Select>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           <Button
             variant="ghost"
             size="icon"
             className="h-8 w-8"
             title={
-              collapsed
-                ? t("toolbar.sqlWorkspace.expand")
-                : t("toolbar.sqlWorkspace.collapse")
+              collapsed ? t("toolbar.sqlWorkspace.expand") : t("toolbar.sqlWorkspace.collapse")
             }
             aria-expanded={!collapsed}
             aria-controls="sql-workspace-body"
             onClick={() => setCollapsed((v) => !v)}
           >
-            {collapsed ? (
-              <ChevronUp className="h-4 w-4" />
-            ) : (
-              <ChevronDown className="h-4 w-4" />
-            )}
+            {collapsed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </Button>
           <Button
             variant="ghost"
@@ -761,9 +794,7 @@ export function SqlWorkspacePanel() {
               {tables.map((tableName, index) => (
                 <span key={tableName}>
                   {index > 0 ? ", " : ""}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono">
-                    {tableName}
-                  </code>
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono">{tableName}</code>
                 </span>
               ))}
             </p>
@@ -795,10 +826,7 @@ export function SqlWorkspacePanel() {
               }}
               onKeyDown={(event) => {
                 if (completion.tryKey(event)) return;
-                if (
-                  (event.ctrlKey || event.metaKey) &&
-                  event.key === "Enter"
-                ) {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
                   event.preventDefault();
                   void runQuery();
                 }
@@ -839,8 +867,7 @@ export function SqlWorkspacePanel() {
             </Button>
             {result ? (
               <span className="text-xs text-muted-foreground">
-                {t("toolbar.sqlWorkspace.rowsCount", { count: result.rowCount })}{" "}
-                ·{" "}
+                {t("toolbar.sqlWorkspace.rowsCount", { count: result.rowCount })} ·{" "}
                 {t("toolbar.sqlWorkspace.columnsCount", {
                   count: result.columns.length,
                 })}
@@ -879,6 +906,18 @@ export function SqlWorkspacePanel() {
               <MapPlus className="h-4 w-4" />
               {t("toolbar.sqlWorkspace.addAsLayer")}
             </Button>
+            {canAddAsQueryLayer ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleAddAsQueryLayer}
+                disabled={exporting}
+                title={t("toolbar.sqlWorkspace.addAsQueryLayerHint")}
+              >
+                <DatabaseZap className="h-4 w-4" />
+                {t("toolbar.sqlWorkspace.addAsQueryLayer")}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -908,9 +947,7 @@ export function SqlWorkspacePanel() {
             </div>
           ) : null}
 
-          {notice ? (
-            <p className="text-sm text-muted-foreground">{notice}</p>
-          ) : null}
+          {notice ? <p className="text-sm text-muted-foreground">{notice}</p> : null}
 
           {result ? (
             result.columns.length > 0 ? (
@@ -921,10 +958,7 @@ export function SqlWorkspacePanel() {
                       {/* Key by index: a SELECT * over a join can repeat a
                           column name, and names would not be unique keys. */}
                       {result.columns.map((column, colIndex) => (
-                        <th
-                          key={colIndex}
-                          className="border-b px-2 py-1.5 text-left font-medium"
-                        >
+                        <th key={colIndex} className="border-b px-2 py-1.5 text-start font-medium">
                           {column}
                         </th>
                       ))}
@@ -948,9 +982,7 @@ export function SqlWorkspacePanel() {
                 </table>
               </ScrollArea>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                {t("toolbar.sqlWorkspace.noRows")}
-              </p>
+              <p className="text-sm text-muted-foreground">{t("toolbar.sqlWorkspace.noRows")}</p>
             )
           ) : error ? null : (
             <div className="flex min-h-0 flex-1 items-center justify-center rounded-md border border-dashed">

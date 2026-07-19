@@ -2,22 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEFAULT_LAYER_STYLE, type LayerStyle } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
-import {
-  buildMapboxStyle,
-  type ExportableLayer,
-} from "../packages/map/src/mapbox-style-export";
-import {
-  applyMapboxStyleImport,
-  parseMapboxStyle,
-} from "../packages/map/src/mapbox-style-import";
+import { buildMapboxStyle, type ExportableLayer } from "../packages/map/src/mapbox-style-export";
+import { applyMapboxStyleImport, parseMapboxStyle } from "../packages/map/src/mapbox-style-import";
 
 function style(patch: Partial<LayerStyle> = {}): LayerStyle {
   return { ...DEFAULT_LAYER_STYLE, ...patch };
 }
 
-function layer(
-  patch: Partial<ExportableLayer> & { style?: LayerStyle } = {},
-): ExportableLayer {
+function layer(patch: Partial<ExportableLayer> & { style?: LayerStyle } = {}): ExportableLayer {
   return {
     id: patch.id ?? "layer-1",
     name: patch.name ?? "My Layer",
@@ -635,13 +627,7 @@ describe("parseMapboxStyle imports hand-written styles", () => {
           type: "circle",
           source: "s",
           paint: {
-            "circle-color": [
-              "match",
-              ["to-string", ["get", "cat"]],
-              "a",
-              "#ff0000",
-              "#000000",
-            ],
+            "circle-color": ["match", ["to-string", ["get", "cat"]], "a", "#ff0000", "#000000"],
           },
         },
       ],
@@ -722,13 +708,7 @@ describe("parseMapboxStyle imports hand-written styles", () => {
           type: "fill",
           source: "s",
           paint: {
-            "fill-color": [
-              "match",
-              ["get", "region"],
-              "east",
-              "#ff0000",
-              "#000000",
-            ],
+            "fill-color": ["match", ["get", "region"], "east", "#ff0000", "#000000"],
           },
         },
         {
@@ -767,9 +747,7 @@ describe("parseMapboxStyle imports hand-written styles", () => {
     };
     const result = parseMapboxStyle(external);
     assert.equal(result.style.pointRenderer, "heatmap");
-    assert.ok(
-      result.warnings.some((w) => /both circle and heatmap/.test(w)),
-    );
+    assert.ok(result.warnings.some((w) => /both circle and heatmap/.test(w)));
   });
 
   it("does not fold layer opacity when opacity is 1 (round-trip is lossless)", () => {
@@ -777,5 +755,54 @@ describe("parseMapboxStyle imports hand-written styles", () => {
     // fillOpacity survives export+import unchanged.
     const { style: result } = roundTrip(style({ fillOpacity: 0.33 }), polygons());
     assert.equal(result.fillOpacity, 0.33);
+  });
+});
+
+describe("switched-off else rule round-trip (#1312)", () => {
+  it("recovers the hide-unmatched state as a disabled else record", () => {
+    const original = style({
+      vectorStyleMode: "rule-based",
+      vectorRules: [
+        {
+          id: "r1",
+          label: "Parks",
+          filter: '["==",["get","category"],"a"]',
+          color: "#00ff00",
+          isElse: false,
+        },
+        {
+          id: "r2",
+          label: "",
+          filter: "",
+          color: "#888888",
+          isElse: true,
+          enabled: false,
+        },
+      ],
+    });
+    const { style: result } = roundTrip(original, polygons());
+    assert.equal(result.vectorStyleMode, "rule-based");
+    assert.equal(result.vectorRules.find((rule) => rule.isElse)?.enabled, false);
+  });
+
+  it("does not disable the else rule for an unrelated any filter", () => {
+    const imported = parseMapboxStyle({
+      version: 8,
+      sources: {},
+      layers: [
+        {
+          id: "fill",
+          type: "fill",
+          source: "s",
+          filter: ["all", ["==", ["geometry-type"], "Polygon"], ["any", ["has", "x"]]],
+          paint: {
+            "fill-color": ["case", ["==", ["get", "category"], "a"], "#00ff00", "#888888"],
+          },
+        },
+      ],
+    } as never);
+    const result = applyMapboxStyleImport(DEFAULT_LAYER_STYLE, imported);
+    assert.equal(result.vectorStyleMode, "rule-based");
+    assert.equal(result.vectorRules.find((rule) => rule.isElse)?.enabled, undefined);
   });
 });

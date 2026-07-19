@@ -1,13 +1,10 @@
 import { Input, Label } from "@geolibre/ui";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { buildWmtsLayer } from "../apply-service";
 import { DEFAULT_WMTS_URL } from "../constants";
-import { createBaseLayer } from "../helpers";
 import { ServiceLibrarySection } from "../ServiceLibrarySection";
-import {
-  serviceFieldString,
-  type ServiceFields,
-} from "../service-library";
+import { serviceFieldString, type ServiceFields } from "../service-library";
 import { AddDataSourceForm, SampleDataSelect, useAddDataSource } from "../shared";
 
 export function WmtsSource() {
@@ -31,19 +28,7 @@ export function WmtsSource() {
     if (!wmtsUrl.trim()) {
       throw new Error(t("addData.wmts.errorUrl"));
     }
-    source.addAndClose(
-      createBaseLayer(
-        name,
-        "wmts",
-        {
-          type: "raster",
-          tiles: [wmtsUrl.trim()],
-          tileSize: Number(wmtsTileSize) || 256,
-          url: wmtsUrl.trim(),
-        },
-        { service: "wmts" },
-      ),
-    );
+    source.addAndClose(buildWmtsLayer({ name, url: wmtsUrl, tileSize: wmtsTileSize }));
   });
 
   return (
@@ -88,9 +73,7 @@ export function WmtsSource() {
           </div>
         </div>
         <SampleDataSelect
-          samples={[
-            { label: t("addData.wmts.sampleLabel"), value: { url: DEFAULT_WMTS_URL } },
-          ]}
+          samples={[{ label: t("addData.wmts.sampleLabel"), value: { url: DEFAULT_WMTS_URL } }]}
           onSelect={applyFields}
         />
       </div>

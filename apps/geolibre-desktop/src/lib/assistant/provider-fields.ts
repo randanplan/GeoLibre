@@ -57,6 +57,10 @@ export const PROVIDER_FIELDS = {
       placeholderKey: "settings.ai.placeholder.ollamaBaseUrl",
       secret: false,
       required: true,
+      // provider.ts's ollamaBaseUrl() also accepts OLLAMA_HOST, so surface a
+      // value set under it rather than showing the field empty while the status
+      // reads "configured".
+      aliases: ["OLLAMA_HOST"],
     },
     {
       envKey: "OLLAMA_MODEL",
@@ -131,6 +135,5 @@ export const PROVIDER_DOCS_URL: Partial<Record<AssistantProviderId, string>> = {
   anthropic: "https://console.anthropic.com/settings/keys",
   openai: "https://platform.openai.com/api-keys",
   ollama: "https://ollama.com/download",
-  bedrock:
-    "https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html",
+  bedrock: "https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started.html",
 };

@@ -339,9 +339,7 @@ function asRange(filterBody: XmlNode): Range | null {
  * graduated detection, and skipped when reading the stops (its value is the
  * first stop, already carried by the first range rule).
  */
-function asBelowBound(
-  filterBody: XmlNode,
-): { property: string; value: number } | null {
+function asBelowBound(filterBody: XmlNode): { property: string; value: number } | null {
   const single = asSingleComparison(filterBody);
   if (single && single.op === "PropertyIsLessThan") {
     const value = toNum(single.literal);
@@ -405,9 +403,7 @@ function ogcToMapbox(filterBody: unknown): unknown[] | null {
     PropertyIsGreaterThanOrEqualTo: ">=",
   };
 
-  const keys = Object.keys(filterBody).filter(
-    (key) => !key.startsWith("@_") && key !== "#text",
-  );
+  const keys = Object.keys(filterBody).filter((key) => !key.startsWith("@_") && key !== "#text");
   // Combine multiple predicates at one level as an implicit `all` (a defensive
   // case; a well-formed Filter has a single root predicate).
   if (keys.length > 1) {
@@ -544,6 +540,46 @@ function scaleToZoom(denominator: number): number {
 }
 
 /**
+ * A rule's scale window as (possibly fractional) zoom bounds, with each end
+ * absent when the rule has no bound there or the bound lies outside the
+ * renderable range. Finer-grained than {@link scaleToZoom} (which rounds to
+ * whole zooms for the layer window) so per-rule scale ranges round-trip.
+ */
+function ruleZoomWindow(node: XmlNode): { minZoom?: number; maxZoom?: number } {
+  const out: { minZoom?: number; maxZoom?: number } = {};
+  const minScale = toNum(nodeText(node.MinScaleDenominator));
+  if (minScale !== null && minScale > 0) {
+    const zoom = Math.round(Math.log2(OGC_SCALE_DENOMINATOR_AT_ZOOM_0 / minScale) * 100) / 100;
+    if (zoom < MAX_LAYER_ZOOM) out.maxZoom = zoom;
+  }
+  const maxScale = toNum(nodeText(node.MaxScaleDenominator));
+  if (maxScale !== null && maxScale > 0) {
+    const zoom = Math.round(Math.log2(OGC_SCALE_DENOMINATOR_AT_ZOOM_0 / maxScale) * 100) / 100;
+    if (zoom > MIN_LAYER_ZOOM) out.minZoom = zoom;
+  }
+  return out;
+}
+
+/**
+ * Apply the widest (union) zoom window across all render rules to the patch.
+ * Used for the rule-based renderer, where each rule may carry its own scale
+ * window (the layer window intersected with the rule's range on export): the
+ * union recovers the layer window, and each rule's narrower bounds become
+ * per-rule zoom ranges in {@link classifyRenderRules}.
+ */
+function applyWidestScale(rules: RenderRule[], patch: Partial<Omit<LayerStyle, "labels">>): void {
+  let minZoom = MAX_LAYER_ZOOM;
+  let maxZoom = MIN_LAYER_ZOOM;
+  for (const rule of rules) {
+    const window = ruleZoomWindow(rule.node);
+    minZoom = Math.min(minZoom, window.minZoom ?? MIN_LAYER_ZOOM);
+    maxZoom = Math.max(maxZoom, window.maxZoom ?? MAX_LAYER_ZOOM);
+  }
+  patch.minZoom = minZoom;
+  patch.maxZoom = maxZoom;
+}
+
+/**
  * Apply a rule's `Min`/`MaxScaleDenominator` to the patch's zoom window. An
  * absent bound resets that end to the full-range default (0 / 24) rather than
  * leaving the target layer's prior window, so importing a full-range SLD over a
@@ -553,11 +589,9 @@ function scaleToZoom(denominator: number): number {
 function applyScale(rule: XmlNode, patch: Partial<Omit<LayerStyle, "labels">>): void {
   // Higher zoom ⇒ smaller scale denominator, so MinScaleDenominator sets maxZoom.
   const minScale = toNum(nodeText(rule.MinScaleDenominator));
-  patch.maxZoom =
-    minScale !== null && minScale > 0 ? scaleToZoom(minScale) : MAX_LAYER_ZOOM;
+  patch.maxZoom = minScale !== null && minScale > 0 ? scaleToZoom(minScale) : MAX_LAYER_ZOOM;
   const maxScale = toNum(nodeText(rule.MaxScaleDenominator));
-  patch.minZoom =
-    maxScale !== null && maxScale > 0 ? scaleToZoom(maxScale) : MIN_LAYER_ZOOM;
+  patch.minZoom = maxScale !== null && maxScale > 0 ? scaleToZoom(maxScale) : MIN_LAYER_ZOOM;
 }
 
 /** Apply a rule's recovered flat paint to the style patch. */
@@ -655,34 +689,23 @@ export function parseSld(xml: string): SldImportResult {
 
   const sld = isNode(root) ? root.StyledLayerDescriptor : undefined;
   if (!isNode(sld)) {
-    warnings.push(
-      "This file is not an SLD (no StyledLayerDescriptor); nothing was imported.",
-    );
+    warnings.push("This file is not an SLD (no StyledLayerDescriptor); nothing was imported.");
     return { style: patch, labels, warnings, matchedRuleCount: 0 };
   }
 
   // First NamedLayer/UserLayer → first UserStyle → first FeatureTypeStyle.
-  const namedLayer =
-    toArray(sld.NamedLayer)[0] ?? toArray(sld.UserLayer)[0];
-  const userStyles = isNode(namedLayer)
-    ? toArray(namedLayer.UserStyle)
-    : [];
+  const namedLayer = toArray(sld.NamedLayer)[0] ?? toArray(sld.UserLayer)[0];
+  const userStyles = isNode(namedLayer) ? toArray(namedLayer.UserStyle) : [];
   if (userStyles.length > 1) {
     warnings.push("The SLD has multiple styles; only the first was imported.");
   }
   const userStyle = userStyles[0];
-  const featureTypeStyles = isNode(userStyle)
-    ? toArray(userStyle.FeatureTypeStyle)
-    : [];
+  const featureTypeStyles = isNode(userStyle) ? toArray(userStyle.FeatureTypeStyle) : [];
   if (featureTypeStyles.length > 1) {
-    warnings.push(
-      "The style has multiple FeatureTypeStyles; only the first was imported.",
-    );
+    warnings.push("The style has multiple FeatureTypeStyles; only the first was imported.");
   }
   const featureTypeStyle = featureTypeStyles[0];
-  const rules = isNode(featureTypeStyle)
-    ? toArray(featureTypeStyle.Rule).filter(isNode)
-    : [];
+  const rules = isNode(featureTypeStyle) ? toArray(featureTypeStyle.Rule).filter(isNode) : [];
 
   if (rules.length === 0) {
     warnings.push("The SLD had no rules; nothing was imported.");
@@ -713,9 +736,16 @@ export function parseSld(xml: string): SldImportResult {
 
   if (renderRules.length > 0) {
     classifyRenderRules(renderRules, patch, warnings);
-    // Scale denominators are the same on every rule the exporter emits; read the
-    // window from the first render rule.
-    applyScale(renderRules[0].node, patch);
+    if (patch.vectorStyleMode === "rule-based") {
+      // Rule-based rules may each carry their own scale window (per-rule zoom
+      // ranges); the union recovers the layer window without narrowing it to
+      // one rule's range.
+      applyWidestScale(renderRules, patch);
+    } else {
+      // Scale denominators are the same on every rule the exporter emits; read
+      // the window from the first render rule.
+      applyScale(renderRules[0].node, patch);
+    }
   }
 
   if (matchedRuleCount === 0) {
@@ -747,9 +777,7 @@ function classifyRenderRules(
   // The catch-all is an `ElseFilter` rule or, per the SLD spec, a rule with
   // neither a Filter nor an ElseFilter (which matches unconditionally). Either
   // supplies the renderer's fallback color.
-  const elseRule = renderRules.find(
-    (rule) => rule.isElse || !rule.filterBody,
-  );
+  const elseRule = renderRules.find((rule) => rule.isElse || !rule.filterBody);
 
   // The first render rule supplies the flat style (stroke/width/opacity/size are
   // constant across an exported renderer's rules).
@@ -761,15 +789,35 @@ function classifyRenderRules(
     return;
   }
 
+  // Categorized/graduated can only represent rules whose symbology differs by
+  // fill color alone with one shared scale window. Rules with differing
+  // stroke/opacity/size or per-rule scale ranges must stay rule-based or
+  // those per-rule properties would be silently dropped.
+  const firstPaint = renderRules[0].paint;
+  const firstWindow = ruleZoomWindow(renderRules[0].node);
+  const uniformSymbology = renderRules.every((entry) => {
+    const window = ruleZoomWindow(entry.node);
+    return (
+      // In a line-only rule (no fill) the stroke is the class color channel
+      // itself, not an outline, so a per-rule stroke color is expected there.
+      (entry.paint.fillColor === undefined || entry.paint.strokeColor === firstPaint.strokeColor) &&
+      entry.paint.strokeWidth === firstPaint.strokeWidth &&
+      entry.paint.fillOpacity === firstPaint.fillOpacity &&
+      entry.paint.pointSize === firstPaint.pointSize &&
+      window.minZoom === firstWindow.minZoom &&
+      window.maxZoom === firstWindow.maxZoom
+    );
+  });
+
   // Categorized: every filter is `PropertyIsEqualTo` on one shared property.
   const comparisons = filtered.map((rule) =>
     rule.filterBody ? asSingleComparison(rule.filterBody) : null,
   );
   if (
+    uniformSymbology &&
     comparisons.every(
       (comparison) =>
-        comparison?.op === "PropertyIsEqualTo" &&
-        comparison.property === comparisons[0]?.property,
+        comparison?.op === "PropertyIsEqualTo" && comparison.property === comparisons[0]?.property,
     )
   ) {
     const property = comparisons[0]!.property;
@@ -803,18 +851,10 @@ function classifyRenderRules(
   // Graduated: every filter is a numeric range (`>= [AND <]`), plus optionally
   // the exporter's `< first` below-break clamp guard, all on one shared property.
   // The range rules' lower bounds and colors become the interpolation stops.
-  const ranges = filtered.map((rule) =>
-    rule.filterBody ? asRange(rule.filterBody) : null,
-  );
-  const belows = filtered.map((rule) =>
-    rule.filterBody ? asBelowBound(rule.filterBody) : null,
-  );
-  const rangeIndices = filtered
-    .map((_, index) => index)
-    .filter((index) => ranges[index]);
-  const gradProperty = rangeIndices.length
-    ? ranges[rangeIndices[0]]!.property
-    : null;
+  const ranges = filtered.map((rule) => (rule.filterBody ? asRange(rule.filterBody) : null));
+  const belows = filtered.map((rule) => (rule.filterBody ? asBelowBound(rule.filterBody) : null));
+  const rangeIndices = filtered.map((_, index) => index).filter((index) => ranges[index]);
+  const gradProperty = rangeIndices.length ? ranges[rangeIndices[0]]!.property : null;
   // The lowest range's bound/color: a below-guard is only recognized (and
   // skipped) when it exactly matches this, so a genuine open-ended `< x` class
   // in an external SLD is not silently swallowed.
@@ -827,6 +867,7 @@ function classifyRenderRules(
     }
   }
   const everyRuleIsRangeOrGuard =
+    uniformSymbology &&
     gradProperty !== null &&
     filtered.every((rule, index) => {
       if (ranges[index]) return ranges[index]!.property === gradProperty;
@@ -862,15 +903,51 @@ function classifyRenderRules(
   // Otherwise a rule-based renderer: translate each filter back to a MapLibre
   // filter, keeping the rules that translate.
   const vectorRules: VectorRule[] = [];
+  // Per-rule zoom bounds are the bounds narrower than the union (layer) window
+  // across all rules; per-rule symbol overrides are the paint fields that
+  // differ from the first rule's flat paint (which applyPaint put on the layer).
+  const windows = renderRules.map((rule) => ruleZoomWindow(rule.node));
+  const unionMinZoom = Math.min(...windows.map((window) => window.minZoom ?? MIN_LAYER_ZOOM));
+  const unionMaxZoom = Math.max(...windows.map((window) => window.maxZoom ?? MAX_LAYER_ZOOM));
+  const basePaint = renderRules[0].paint;
   for (let index = 0; index < filtered.length; index += 1) {
     const rule = filtered[index];
     const expression = rule.filterBody ? ogcToMapbox(rule.filterBody) : null;
     if (expression === null) {
-      warnings.push(
-        "A rule used a filter that could not be read; it was skipped.",
-      );
+      warnings.push("A rule used a filter that could not be read; it was skipped.");
       continue;
     }
+    const paint = rule.paint;
+    const window = ruleZoomWindow(rule.node);
+    const minZoom =
+      window.minZoom !== undefined && window.minZoom > unionMinZoom ? window.minZoom : undefined;
+    const maxZoom =
+      window.maxZoom !== undefined && window.maxZoom < unionMaxZoom ? window.maxZoom : undefined;
+    // In a line-only rule the stroke carries the rule color itself (there is
+    // no fill), so it is only an outline override when a fill is present too.
+    const strokeColor =
+      paint.fillColor !== undefined &&
+      paint.strokeColor !== undefined &&
+      paint.strokeColor !== basePaint.strokeColor
+        ? paint.strokeColor
+        : undefined;
+    const strokeWidth =
+      paint.strokeWidth !== undefined && paint.strokeWidth !== basePaint.strokeWidth
+        ? paint.strokeWidth
+        : undefined;
+    const fillOpacity =
+      paint.fillOpacity !== undefined && paint.fillOpacity !== basePaint.fillOpacity
+        ? paint.fillOpacity
+        : undefined;
+    // Size is a circle radius only for a plain circle mark (mirrors applyPaint,
+    // where a shape marker's Size is the marker size instead).
+    const markName = paint.hasPointMark ? paint.wellKnownName : undefined;
+    const isShapeMarker =
+      !!markName && markName !== "circle" && !!WELL_KNOWN_NAME_TO_SHAPE[markName];
+    const circleRadius =
+      !isShapeMarker && paint.pointSize !== undefined && paint.pointSize !== basePaint.pointSize
+        ? paint.pointSize / 2
+        : undefined;
     vectorRules.push({
       id: `sld-rule-${index}`,
       // The exporter writes each rule's label as its Title; recover it so the
@@ -879,17 +956,46 @@ function classifyRenderRules(
       filter: JSON.stringify(expression),
       color: renderRuleColor(rule.paint) ?? DEFAULT_LAYER_STYLE.fillColor,
       isElse: false,
+      ...(minZoom !== undefined ? { minZoom } : {}),
+      ...(maxZoom !== undefined ? { maxZoom } : {}),
+      ...(strokeColor !== undefined ? { strokeColor } : {}),
+      ...(strokeWidth !== undefined ? { strokeWidth } : {}),
+      ...(fillOpacity !== undefined ? { fillOpacity } : {}),
+      ...(circleRadius !== undefined ? { circleRadius } : {}),
     });
   }
   const elseColor =
-    (elseRule ? renderRuleColor(elseRule.paint) : undefined) ??
-    DEFAULT_LAYER_STYLE.fillColor;
+    (elseRule ? renderRuleColor(elseRule.paint) : undefined) ?? DEFAULT_LAYER_STYLE.fillColor;
+  // The else rule keeps its own look as overrides when its paint differs from
+  // the first rule's flat paint (which applyPaint put on the layer).
+  const elsePaint = elseRule?.paint;
+  const elseStrokeColor =
+    elsePaint?.fillColor !== undefined &&
+    elsePaint.strokeColor !== undefined &&
+    elsePaint.strokeColor !== basePaint.strokeColor
+      ? elsePaint.strokeColor
+      : undefined;
+  const elseStrokeWidth =
+    elsePaint?.strokeWidth !== undefined && elsePaint.strokeWidth !== basePaint.strokeWidth
+      ? elsePaint.strokeWidth
+      : undefined;
+  const elseFillOpacity =
+    elsePaint?.fillOpacity !== undefined && elsePaint.fillOpacity !== basePaint.fillOpacity
+      ? elsePaint.fillOpacity
+      : undefined;
   vectorRules.push({
     id: "sld-rule-else",
     label: elseRule ? (readTitle(elseRule.node) ?? "") : "",
     filter: "",
     color: elseColor,
     isElse: true,
+    // An SLD without an ElseFilter (or unfiltered catch-all) rule draws
+    // nothing for features matching no rule, so the imported else record is
+    // disabled to reproduce that: the renderer hides unmatched features.
+    ...(elseRule ? {} : { enabled: false }),
+    ...(elseStrokeColor !== undefined ? { strokeColor: elseStrokeColor } : {}),
+    ...(elseStrokeWidth !== undefined ? { strokeWidth: elseStrokeWidth } : {}),
+    ...(elseFillOpacity !== undefined ? { fillOpacity: elseFillOpacity } : {}),
   });
   patch.vectorStyleMode = "rule-based";
   patch.vectorRules = vectorRules;
@@ -905,15 +1011,10 @@ function classifyRenderRules(
  * @param base The layer's current style.
  * @param result The output of {@link parseSld}.
  */
-export function applySldImport(
-  base: LayerStyle,
-  result: SldImportResult,
-): LayerStyle {
+export function applySldImport(base: LayerStyle, result: SldImportResult): LayerStyle {
   return {
     ...base,
     ...result.style,
-    labels: result.labels
-      ? { ...base.labels, ...result.labels }
-      : base.labels,
+    labels: result.labels ? { ...base.labels, ...result.labels } : base.labels,
   };
 }

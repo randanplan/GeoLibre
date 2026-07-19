@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { isGeographicCrs } from "../apps/geolibre-desktop/src/lib/crs-utils";
 import {
   detectCoordinateFields,
   detectDelimitedTextDelimiter,
@@ -59,10 +60,7 @@ describe("delimited text parsing", () => {
     assert.equal(result.totalRows, 3);
     assert.equal(result.skippedRows, 2);
     assert.equal(result.data.features.length, 1);
-    assert.deepEqual(result.data.features[0].geometry.coordinates, [
-      -78.638,
-      35.779,
-    ]);
+    assert.deepEqual(result.data.features[0].geometry.coordinates, [-78.638, 35.779]);
   });
 
   it("rejects files with no valid coordinates", () => {
@@ -93,11 +91,7 @@ describe("delimited text parsing", () => {
 
   it("builds a non-spatial attribute table when both coordinate fields are blank", () => {
     const result = parseDelimitedTextLayer(
-      [
-        "code;name;chapter",
-        "AVH;Avoine d'hiver;1.1",
-        "BDP;Ble dur de printemps;1.1",
-      ].join("\n"),
+      ["code;name;chapter", "AVH;Avoine d'hiver;1.1", "BDP;Ble dur de printemps;1.1"].join("\n"),
       {
         delimiter: ";",
         longitudeField: "",
@@ -121,26 +115,20 @@ describe("delimited text parsing", () => {
   it("rejects a mixed selection where only one coordinate field is blank", () => {
     assert.throws(
       () =>
-        parseDelimitedTextLayer(
-          ["name,longitude,latitude", "Raleigh,-78.638,35.779"].join("\n"),
-          {
-            delimiter: ",",
-            longitudeField: "longitude",
-            latitudeField: "",
-          },
-        ),
+        parseDelimitedTextLayer(["name,longitude,latitude", "Raleigh,-78.638,35.779"].join("\n"), {
+          delimiter: ",",
+          longitudeField: "longitude",
+          latitudeField: "",
+        }),
       /Select both a longitude and a latitude field/,
     );
     assert.throws(
       () =>
-        parseDelimitedTextLayer(
-          ["name,longitude,latitude", "Raleigh,-78.638,35.779"].join("\n"),
-          {
-            delimiter: ",",
-            longitudeField: "",
-            latitudeField: "latitude",
-          },
-        ),
+        parseDelimitedTextLayer(["name,longitude,latitude", "Raleigh,-78.638,35.779"].join("\n"), {
+          delimiter: ",",
+          longitudeField: "",
+          latitudeField: "latitude",
+        }),
       /Select both a longitude and a latitude field/,
     );
   });
@@ -157,6 +145,63 @@ describe("delimited text parsing", () => {
 
     assert.equal(result.isTable, false);
     assert.equal(result.data.features.length, 1);
+  });
+
+  it("keeps out-of-range coordinates when a projected source CRS is given", () => {
+    // UTM zone 43N (EPSG:32643) easting/northing lie far outside the WGS84
+    // +/-180 / +/-90 range; without a projected CRS every row would be skipped
+    // (issue #1338). The caller reprojects these native coordinates to WGS84.
+    const result = parseDelimitedTextLayer(
+      ["id,x,y", "1,659319.6360799533,3005510.000378756"].join("\n"),
+      {
+        delimiter: ",",
+        longitudeField: "x",
+        latitudeField: "y",
+        sourceCrs: "EPSG:32643",
+      },
+    );
+
+    assert.equal(result.isTable, false);
+    assert.equal(result.skippedRows, 0);
+    assert.equal(result.data.features.length, 1);
+    assert.deepEqual(
+      (result.data.features[0].geometry as { coordinates: number[] }).coordinates,
+      [659319.6360799533, 3005510.000378756],
+    );
+  });
+
+  it("still rejects out-of-range coordinates for a WGS84 (blank) CRS", () => {
+    assert.throws(
+      () =>
+        parseDelimitedTextLayer(["id,x,y", "1,659319.6,3005510.0"].join("\n"), {
+          delimiter: ",",
+          longitudeField: "x",
+          latitudeField: "y",
+        }),
+      /No rows contained valid longitude and latitude values\./,
+    );
+  });
+});
+
+describe("isGeographicCrs", () => {
+  it("treats a blank or missing CRS as WGS84", () => {
+    assert.equal(isGeographicCrs(""), true);
+    assert.equal(isGeographicCrs("   "), true);
+    assert.equal(isGeographicCrs(undefined), true);
+  });
+
+  it("recognizes WGS84 aliases regardless of case or stray whitespace", () => {
+    assert.equal(isGeographicCrs("EPSG:4326"), true);
+    assert.equal(isGeographicCrs("epsg:4326"), true);
+    assert.equal(isGeographicCrs("EPSG: 4326"), true);
+    assert.equal(isGeographicCrs("OGC:CRS84"), true);
+    assert.equal(isGeographicCrs("urn:ogc:def:crs:OGC:1.3:CRS84"), true);
+  });
+
+  it("treats a projected CRS as non-geographic", () => {
+    assert.equal(isGeographicCrs("EPSG:32643"), false);
+    assert.equal(isGeographicCrs("EPSG:3857"), false);
+    assert.equal(isGeographicCrs("ESRI:102100"), false);
   });
 });
 
@@ -180,6 +225,32 @@ describe("parseCoordinate", () => {
     assert.ok(Number.isNaN(parseCoordinate("")));
     assert.ok(Number.isNaN(parseCoordinate(undefined)));
     assert.ok(Number.isNaN(parseCoordinate("not-a-number")));
+  });
+
+  it("reads a bare comma as thousands grouping for projected coordinates", () => {
+    // A UTM easting exported with a thousands separator and no decimal must not
+    // be mistaken for a decimal (659.319); grouped mode strips the commas.
+    assert.equal(parseCoordinate("659,319", { grouped: true }), 659319);
+    assert.equal(parseCoordinate("1,234,567", { grouped: true }), 1234567);
+    // Without grouped mode (WGS84) the historical decimal reading is preserved.
+    assert.equal(parseCoordinate("659,319"), 659.319);
+  });
+
+  it("still reads a European decimal comma for projected coordinates", () => {
+    // `659319,6` is not a valid thousands layout, so it stays a decimal even in
+    // grouped mode; a mixed grouping+decimal value resolves the same way.
+    assert.equal(parseCoordinate("659319,6", { grouped: true }), 659319.6);
+    assert.equal(parseCoordinate("659319.6", { grouped: true }), 659319.6);
+    assert.equal(parseCoordinate("1,234.56", { grouped: true }), 1234.56);
+  });
+
+  it("resolves the ambiguous small-magnitude grouped value as thousands (documented)", () => {
+    // `45,123` could be 45123 (thousands) or 45.123 (European decimal); it is
+    // indistinguishable from the string alone. Grouped mode deliberately chooses
+    // the large-magnitude reading, which suits UTM/State-Plane coordinates. This
+    // test pins that documented behavior so a future change to the heuristic is
+    // a conscious one.
+    assert.equal(parseCoordinate("45,123", { grouped: true }), 45123);
   });
 });
 
@@ -244,10 +315,9 @@ describe("layer refresh helpers", () => {
       enabled: true,
       intervalMs: MIN_REFRESH_INTERVAL_MS,
     });
-    assert.deepEqual(
-      setLayerRefreshConfig(source, { enabled: false, intervalMs: 0 }),
-      { metadata: {} },
-    );
+    assert.deepEqual(setLayerRefreshConfig(source, { enabled: false, intervalMs: 0 }), {
+      metadata: {},
+    });
   });
 
   it("only treats HTTP GeoJSON and WFS sources as refreshable", () => {

@@ -221,7 +221,9 @@ describe("parseQml", () => {
       <labeling type="rule-based"><rules><rule><settings/></rule></rules></labeling>`),
     );
     assert.equal(result.labels, null);
-    assert.ok(result.warnings.some((w) => /"rule-based" labeling has no GeoLibre equivalent/.test(w)));
+    assert.ok(
+      result.warnings.some((w) => /"rule-based" labeling has no GeoLibre equivalent/.test(w)),
+    );
   });
 
   it("reports a clear error for a non-QML document", () => {
@@ -241,5 +243,35 @@ describe("parseQml", () => {
     assert.equal(merged.fillColor, "#ff0000");
     assert.equal(merged.labels.enabled, true);
     assert.equal(merged.labels.field, "name");
+  });
+});
+
+describe("rule trees without an ELSE rule (#1312)", () => {
+  it("imports as a disabled else record so unmatched features stay hidden", () => {
+    const result = parseQml(
+      qgis(`<renderer-v2 type="RuleRenderer">
+        <rules>
+          <rule filter="&quot;pop&quot; &gt; 1000" symbol="0" label="big"/>
+        </rules>
+        <symbols>${fillSymbol("0", "255,0,0,255")}</symbols>
+      </renderer-v2>`),
+    );
+    assert.equal(result.style.vectorStyleMode, "rule-based");
+    const elseRule = (result.style.vectorRules ?? []).find((r) => r.isElse);
+    assert.equal(elseRule?.enabled, false);
+  });
+
+  it("keeps the else record enabled when the QML has an ELSE rule", () => {
+    const result = parseQml(
+      qgis(`<renderer-v2 type="RuleRenderer">
+        <rules>
+          <rule filter="&quot;pop&quot; &gt; 1000" symbol="0" label="big"/>
+          <rule filter="ELSE" symbol="1"/>
+        </rules>
+        <symbols>${fillSymbol("0", "255,0,0,255")}${fillSymbol("1", "221,221,221,255")}</symbols>
+      </renderer-v2>`),
+    );
+    const elseRule = (result.style.vectorRules ?? []).find((r) => r.isElse);
+    assert.equal(elseRule?.enabled, undefined);
   });
 });

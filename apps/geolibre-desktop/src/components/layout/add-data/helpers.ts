@@ -5,9 +5,13 @@
 
 import { DEFAULT_LAYER_STYLE, type GeoLibreLayer } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
+import type { TFunction } from "i18next";
+import { classifyFetchFailure } from "../../../lib/fetch-error";
 import { isTauri } from "../../../lib/is-tauri";
 import {
   DELIMITED_TEXT_DELIMITERS,
+  EOX_S2CLOUDLESS_ATTRIBUTION,
+  GEBCO_ATTRIBUTION,
   GPX_PROXY_PATH,
   WFS_PROXY_PATH,
   WMS_PROXY_PATH,
@@ -28,6 +32,34 @@ export function layerNameFromPath(path: string, fallback: string): string {
   return fileNameFromPath(path).replace(/\.[^.]+$/, "") || fallback;
 }
 
+/**
+ * Normalize a user-entered CRS into the `AUTHORITY:CODE` form `ST_Transform`
+ * expects: a bare number becomes `EPSG:<n>`, an `epsg:4326` is upper-cased, and
+ * an already-qualified `ESRI:102100` passes through. A blank stays blank (load
+ * the data as-is). Shared by the CAD, File Geodatabase, and Delimited Text
+ * sources.
+ *
+ * For authority-code input, all whitespace is stripped, not just the edges, so a
+ * code pasted with a stray space (e.g. `EPSG: 32643`, common when copied from a
+ * site that renders it with a space) becomes `EPSG:32643` and is handed to PROJ
+ * in a form it accepts. This also keeps the normalized value in agreement with
+ * `isGeographicCrs`, which strips whitespace before classifying.
+ *
+ * A WKT definition (which `ST_Transform` also accepts) is passed through with
+ * only edge trimming: its internal whitespace and letter case are significant,
+ * so it is detected by its brackets/quotes and left untouched.
+ */
+export function normalizeCrs(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  // A WKT string carries meaningful spaces and casing; compacting or upper-casing
+  // it would corrupt it, so return it as-is once edge-trimmed.
+  if (/[["]/.test(trimmed)) return trimmed;
+  const value = trimmed.replace(/\s+/g, "");
+  if (/^\d+$/.test(value)) return `EPSG:${value}`;
+  return value.toUpperCase();
+}
+
 export function createBaseLayer(
   name: string,
   type: GeoLibreLayer["type"],
@@ -46,10 +78,42 @@ export function createBaseLayer(
   };
 }
 
-export function appendQuery(
-  endpoint: string,
-  params: Array<[string, string]>,
-): string {
+/**
+ * Attribution required for known keyless tile hosts whose license mandates a
+ * credit (EOX Sentinel-2 cloudless under CC BY 4.0; GEBCO bathymetry). Returns
+ * the attribution string for a recognized host so the tile layer credits its
+ * source in MapLibre's attribution control, or `undefined` for
+ * unrecognized/invalid URLs. Keying off the host (not an exact URL) means the
+ * credit attaches however the layer was added — a sample preset or a
+ * hand-pasted service URL, including the WMS GetMap template built from it.
+ */
+export function attributionForTileUrl(url: string): string | undefined {
+  try {
+    const { hostname, href } = new URL(url);
+    // Key off the EOX host + Sentinel-2 cloudless layer id rather than one exact
+    // hostname, so a pasted URL on another eox.at subdomain still carries the
+    // required CC BY 4.0 credit. The `.eox.at` suffix (with the bare-domain
+    // case) avoids matching lookalike hosts like `evil-eox.at`.
+    const isEoxHost = hostname === "eox.at" || hostname.endsWith(".eox.at");
+    if (isEoxHost && href.includes("s2cloudless")) {
+      return EOX_S2CLOUDLESS_ATTRIBUTION;
+    }
+    // Any GEBCO WMS host (the `.gebco.net` suffix, with the bare-domain case)
+    // carries the required GEBCO credit; the suffix check avoids lookalikes like
+    // `evil-gebco.net`. Unlike the EOX branch this matches on host alone (no
+    // LAYERS check) because wms.gebco.net serves only the bathymetry grid today;
+    // if GEBCO ever hosts a differently-licensed product here, gate on the layer.
+    const isGebcoHost = hostname === "gebco.net" || hostname.endsWith(".gebco.net");
+    if (isGebcoHost) {
+      return GEBCO_ATTRIBUTION;
+    }
+  } catch {
+    // Relative or malformed URL — no known attribution to attach.
+  }
+  return undefined;
+}
+
+export function appendQuery(endpoint: string, params: Array<[string, string]>): string {
   const separator = endpoint.includes("?")
     ? endpoint.endsWith("?") || endpoint.endsWith("&")
       ? ""
@@ -57,8 +121,7 @@ export function appendQuery(
     : "?";
   const query = params
     .map(([key, value]) => {
-      const encodedValue =
-        value === "{bbox-epsg-3857}" ? value : encodeURIComponent(value);
+      const encodedValue = value === "{bbox-epsg-3857}" ? value : encodeURIComponent(value);
       return `${encodeURIComponent(key)}=${encodedValue}`;
     })
     .join("&");
@@ -72,9 +135,7 @@ export function appendQuery(
  * "1.1.1".
  */
 export function normalizeWmsVersion(version: unknown): string {
-  return typeof version === "string" && version.trim().startsWith("1.3")
-    ? "1.3.0"
-    : "1.1.1";
+  return typeof version === "string" && version.trim().startsWith("1.3") ? "1.3.0" : "1.1.1";
 }
 
 export function createWmsTileUrl(options: {
@@ -137,10 +198,7 @@ export function parseRequiredNumber(value: string, label: string): number {
   return parsed;
 }
 
-export function parseOptionalNumber(
-  value: string,
-  label: string,
-): number | undefined {
+export function parseOptionalNumber(value: string, label: string): number | undefined {
   if (!value.trim()) return undefined;
   return parseRequiredNumber(value, label);
 }
@@ -178,6 +236,21 @@ export function errorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * Builds a translated, user-facing message for a failed service request in the
+ * Add Data forms. A network/TLS/CORS or timeout failure (the ones the browser
+ * or native path report opaquely) maps to a localized hint; anything else keeps
+ * the error's own message so a service exception or status text still shows
+ * through. This routes the fetch-error classification through `t()` so the form
+ * does not surface an untranslated string next to its localized labels.
+ */
+export function serviceRequestErrorMessage(error: unknown, t: TFunction, fallback: string): string {
+  const { kind } = classifyFetchFailure(error);
+  if (kind === "network") return t("addData.common.networkFailure");
+  if (kind === "timeout") return t("addData.common.requestTimedOut");
+  return errorMessage(error, fallback);
+}
+
 function isViteDevServer(): boolean {
   return Boolean(
     (
@@ -195,9 +268,7 @@ function isViteDevServer(): boolean {
  * unchanged. The proxy is generic; the `GPX_PROXY_PATH` name is historical.
  */
 export function proxyFeedRequestUrl(url: string): string {
-  return isViteDevServer()
-    ? `${GPX_PROXY_PATH}?url=${encodeURIComponent(url)}`
-    : url;
+  return isViteDevServer() ? `${GPX_PROXY_PATH}?url=${encodeURIComponent(url)}` : url;
 }
 
 /**
@@ -226,14 +297,18 @@ async function fetchCapabilitiesText(
     // but race it against the caller's abort + a 30s cap so this call still
     // returns promptly (matching the browser fetch branch below) rather than
     // hanging on a slow host or a superseded request.
-    const { invoke } = await import("@tauri-apps/api/core");
+    const { fetchUrlBytes } = await import("../../../lib/native-http");
     const timeout = AbortSignal.timeout(30_000);
     const abort = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const bytesPromise = fetchUrlBytes(requestUrl, {
+      context: "OGC GetCapabilities",
+    });
+    // If the abort/timeout wins the race, the native call is left unobserved;
+    // swallow its later rejection so it does not surface as an unhandled
+    // rejection (it is still recorded in diagnostics by the native-http wrapper).
+    bytesPromise.catch(() => {});
     try {
-      const bytes = await Promise.race([
-        invoke<number[] | Uint8Array>("fetch_url_bytes", { url: requestUrl }),
-        rejectOnAbort(abort),
-      ]);
+      const bytes = await Promise.race([bytesPromise, rejectOnAbort(abort)]);
       const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
       return { ok: true, status: 200, text: decodeXmlBytes(array) };
     } catch (error) {
@@ -375,12 +450,8 @@ function buildCapabilitiesUrl(
  * @param service - Which operation-parameter set to strip.
  * @returns The endpoint with its OGC operation parameters removed.
  */
-export function stripOgcOperationParams(
-  endpoint: string,
-  service: "WMS" | "WFS",
-): string {
-  const operationParams =
-    service === "WMS" ? WMS_OPERATION_PARAMS : WFS_OPERATION_PARAMS;
+export function stripOgcOperationParams(endpoint: string, service: "WMS" | "WFS"): string {
+  const operationParams = service === "WMS" ? WMS_OPERATION_PARAMS : WFS_OPERATION_PARAMS;
   return rewriteEndpointQuery(endpoint, operationParams, []);
 }
 
@@ -493,10 +564,7 @@ function directChildText(element: Element, localName: string): string {
  * expected element. An OWS/OGC exception root carries a human-readable reason,
  * so surface it; anything else (e.g. an HTML error page) gets a generic note.
  */
-function capabilitiesRootError(
-  root: Element | null,
-  service: "WMS" | "WFS",
-): string {
+function capabilitiesRootError(root: Element | null, service: "WMS" | "WFS"): string {
   const rootName = root?.localName;
   const isException =
     rootName === "ServiceExceptionReport" ||
@@ -571,10 +639,7 @@ const WFS_OPERATION_PARAMS: ReadonlySet<string> = new Set([
   "resulttype",
 ]);
 
-export function createWfsGetCapabilitiesUrl(
-  endpoint: string,
-  version?: string,
-): string {
+export function createWfsGetCapabilitiesUrl(endpoint: string, version?: string): string {
   return buildCapabilitiesUrl(endpoint, "WFS", WFS_OPERATION_PARAMS, version);
 }
 
@@ -586,9 +651,7 @@ export function createWfsGetCapabilitiesUrl(
  * @param xmlText - The raw GetCapabilities XML response body.
  * @returns The feature types in document order, deduplicated by name.
  */
-export function parseWfsCapabilitiesFeatureTypes(
-  xmlText: string,
-): WfsFeatureTypeOption[] {
+export function parseWfsCapabilitiesFeatureTypes(xmlText: string): WfsFeatureTypeOption[] {
   const doc = new DOMParser().parseFromString(xmlText, "application/xml");
   if (doc.querySelector("parsererror")) {
     throw new Error("Could not parse the WFS capabilities document.");

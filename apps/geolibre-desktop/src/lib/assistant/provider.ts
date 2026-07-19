@@ -51,13 +51,133 @@ export interface AssistantProviderConfig {
  * The first present, non-empty value wins. Read from the user's
  * Settings → Environment variables (never hard-coded).
  */
-const PROVIDER_KEY_NAMES: Partial<
-  Record<AssistantProviderId, readonly string[]>
-> = {
+const PROVIDER_KEY_NAMES: Partial<Record<AssistantProviderId, readonly string[]>> = {
   google: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],
   openai: ["OPENAI_API_KEY"],
 };
+
+/**
+ * The environment variables GeoLibre sources from the user's OS environment (via
+ * the `read_env_vars` Tauri command) so API keys can live in the system/shell
+ * environment instead of the saved project file (issue #1141).
+ *
+ * This is deliberately a **curated subset** of the names the assistant can read,
+ * not every one. It is limited to variables whose presence is a strong signal of
+ * intent to use that provider with GeoLibre: the hosted AI keys, the
+ * GeoLibre/Ollama/OpenAI-compatible-specific names, and the web-search key.
+ *
+ * Generic cloud credentials that developers routinely have in their shell for
+ * unrelated work are **excluded** so GeoLibre never silently adopts them — most
+ * importantly `AWS_*` (which would otherwise auto-activate Amazon Bedrock and
+ * bill the user's AWS account for LLM calls they never intended) and the ambient
+ * `OLLAMA_HOST`. Those providers remain available by entering credentials in
+ * Settings → Environment Variables. The Rust `read_env_vars` command enforces
+ * the same allowlist server-side (the `assistant-os-env` test asserts the two
+ * lists match); that test also guards the inclusions and the exclusions.
+ */
+export const OS_ENV_VAR_NAMES: readonly string[] = [
+  // Provider / model selection overrides.
+  "GEOLIBRE_ASSISTANT_PROVIDER",
+  "GEOLIBRE_ASSISTANT_MODEL",
+  // Google Gemini.
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GENAI_API_KEY",
+  // Anthropic.
+  "ANTHROPIC_API_KEY",
+  // OpenAI.
+  "OPENAI_API_KEY",
+  // Ollama (local). `OLLAMA_HOST` is intentionally omitted — it is the ambient
+  // Ollama variable; `OLLAMA_BASE_URL` is GeoLibre's own documented setting.
+  "OLLAMA_BASE_URL",
+  "OLLAMA_MODEL",
+  // Custom OpenAI-compatible endpoint.
+  "OPENAI_COMPATIBLE_BASE_URL",
+  "OPENAI_COMPATIBLE_API_KEY",
+  "OPENAI_COMPATIBLE_MODEL",
+  // Web-search tool (Tavily).
+  "TAVILY_API_KEY",
+];
+
+/**
+ * Groups of {@link OS_ENV_VAR_NAMES} that are interchangeable aliases for one
+ * credential. {@link firstValue} resolves aliases by *order*, not by source, so
+ * without this a project value set under a different alias than the OS value
+ * would not win — e.g. OS `GEMINI_API_KEY` would shadow a project `GOOGLE_API_KEY`
+ * because it is checked first. {@link scopeOsEnvToProject} uses these groups so a
+ * credential the project defines under any alias shadows every OS-sourced alias
+ * of the same credential, keeping the "project always wins" precedence true.
+ */
+export const OS_ENV_ALIAS_GROUPS: readonly (readonly string[])[] = [
+  ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"],
+  // ollamaBaseUrl() resolves OLLAMA_BASE_URL then OLLAMA_HOST for one credential.
+  ["OLLAMA_BASE_URL", "OLLAMA_HOST"],
+];
+
+/**
+ * Drop OS-sourced variables that the project already provides. An exact-name
+ * collision is left to the caller's spread order, but an alias collision (the
+ * project set a *different* alias of the same credential) is resolved here by
+ * removing the whole OS-sourced alias group — see {@link OS_ENV_ALIAS_GROUPS}.
+ *
+ * @param osEnv Variables read from the OS environment.
+ * @param projectKeys The names the project's Environment variables define.
+ * @returns `osEnv` without any variable the project already covers.
+ */
+export function scopeOsEnvToProject(
+  osEnv: RuntimeEnv,
+  projectKeys: ReadonlySet<string>,
+): RuntimeEnv {
+  const scoped: RuntimeEnv = {};
+  for (const [key, value] of Object.entries(osEnv)) {
+    const group = OS_ENV_ALIAS_GROUPS.find((names) => names.includes(key));
+    const shadowed = group ? group.some((name) => projectKeys.has(name)) : projectKeys.has(key);
+    if (!shadowed) scoped[key] = value;
+  }
+  return scoped;
+}
+
+/** The environment sources merged into the runtime env, from lowest to highest precedence. */
+export interface RuntimeEnvSources {
+  /** Variables read from the OS environment (desktop only). Lowest precedence. */
+  osEnv: RuntimeEnv;
+  /** Device-local AI provider credentials (Settings -> AI Providers). */
+  aiEnv: Record<string, string>;
+  /** Derived `VITE_GEOCODER_*` variables from the geocoding preference. */
+  geocoderEnv: Record<string, string>;
+  /** The device-local Cesium Ion token as `VITE_CESIUM_TOKEN`, or empty. */
+  cesiumEnv: Record<string, string>;
+  /** The project's explicit Environment variables. Highest precedence. */
+  projectEnv: Record<string, string>;
+}
+
+/**
+ * Merge the runtime environment sources into a single record, applying the
+ * precedence the app relies on: an explicit project Environment variable wins,
+ * then the device-local AI provider keys, and the OS environment only fills the
+ * remaining gaps. {@link scopeOsEnvToProject} additionally drops OS aliases that
+ * a project or device credential already covers under a different alias, so the
+ * "explicit value always wins" guarantee holds across alias collisions too.
+ *
+ * Extracted from `useRuntimeEnvironmentVariables` so the precedence ordering can
+ * be unit-tested directly (swapping two spreads here is an easy silent bug).
+ */
+export function mergeRuntimeEnv({
+  osEnv,
+  aiEnv,
+  geocoderEnv,
+  cesiumEnv,
+  projectEnv,
+}: RuntimeEnvSources): RuntimeEnv {
+  return {
+    ...scopeOsEnvToProject(osEnv, new Set([...Object.keys(projectEnv), ...Object.keys(aiEnv)])),
+    ...aiEnv,
+    ...geocoderEnv,
+    ...cesiumEnv,
+    ...projectEnv,
+  };
+}
 
 /**
  * Selectable models per provider, recommended/newest first. The first entry is
@@ -69,12 +189,7 @@ const PROVIDER_KEY_NAMES: Partial<
  */
 export const PROVIDER_MODELS: Record<AssistantProviderId, readonly string[]> = {
   google: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash"],
-  anthropic: [
-    "claude-opus-4-8",
-    "claude-fable-5",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
-  ],
+  anthropic: ["claude-opus-4-8", "claude-fable-5", "claude-sonnet-4-6", "claude-haiku-4-5"],
   openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
   ollama: ["llama3.2", "llama3.1", "qwen2.5", "mistral", "gemma2"],
   bedrock: [
@@ -117,8 +232,7 @@ export type RuntimeEnv = Record<string, string>;
 export function readRuntimeEnv(): RuntimeEnv {
   if (typeof window === "undefined") return {};
   return (
-    (window as unknown as { __GEOLIBRE_RUNTIME_ENV__?: RuntimeEnv })
-      .__GEOLIBRE_RUNTIME_ENV__ ?? {}
+    (window as unknown as { __GEOLIBRE_RUNTIME_ENV__?: RuntimeEnv }).__GEOLIBRE_RUNTIME_ENV__ ?? {}
   );
 }
 
@@ -212,8 +326,7 @@ export function configForProvider(
     case "custom": {
       const baseURL = firstValue(env, "OPENAI_COMPATIBLE_BASE_URL");
       if (!baseURL || !modelId) return null;
-      const apiKey =
-        firstValue(env, "OPENAI_COMPATIBLE_API_KEY") ?? "not-needed";
+      const apiKey = firstValue(env, "OPENAI_COMPATIBLE_API_KEY") ?? "not-needed";
       return {
         provider,
         apiKey,
@@ -225,8 +338,7 @@ export function configForProvider(
       const accessKeyId = firstValue(env, "AWS_ACCESS_KEY_ID");
       const secretAccessKey = firstValue(env, "AWS_SECRET_ACCESS_KEY");
       if (!accessKeyId || !secretAccessKey) return null;
-      const region =
-        firstValue(env, "AWS_REGION", "AWS_DEFAULT_REGION") ?? "us-east-1";
+      const region = firstValue(env, "AWS_REGION", "AWS_DEFAULT_REGION") ?? "us-east-1";
       const sessionToken = firstValue(env, "AWS_SESSION_TOKEN") ?? undefined;
       return {
         provider,
@@ -268,9 +380,7 @@ export function hasProviderKey(env: RuntimeEnv = readRuntimeEnv()): boolean {
 }
 
 /** Providers that are currently configured, in preference order. */
-export function availableProviders(
-  env: RuntimeEnv = readRuntimeEnv(),
-): AssistantProviderId[] {
+export function availableProviders(env: RuntimeEnv = readRuntimeEnv()): AssistantProviderId[] {
   return ASSISTANT_PROVIDER_IDS.filter(
     (provider) => configForProvider(provider, undefined, env) !== null,
   );
@@ -287,9 +397,7 @@ export function availableProviders(
  * @param config A resolved provider selection.
  * @returns A ready-to-use Strands model instance.
  */
-export async function createModel(
-  config: AssistantProviderConfig,
-): Promise<Model> {
+export async function createModel(config: AssistantProviderConfig): Promise<Model> {
   switch (config.provider) {
     case "google": {
       const { GoogleModel } = await import("@strands-agents/sdk/models/google");
@@ -299,9 +407,7 @@ export async function createModel(
       }) as unknown as Model;
     }
     case "anthropic": {
-      const { AnthropicModel } = await import(
-        "@strands-agents/sdk/models/anthropic"
-      );
+      const { AnthropicModel } = await import("@strands-agents/sdk/models/anthropic");
       return new AnthropicModel({
         apiKey: config.apiKey,
         modelId: config.modelId,
@@ -332,9 +438,7 @@ export async function createModel(
       }) as unknown as Model;
     }
     case "bedrock": {
-      const { BedrockModel } = await import(
-        "@strands-agents/sdk/models/bedrock"
-      );
+      const { BedrockModel } = await import("@strands-agents/sdk/models/bedrock");
       return new BedrockModel({
         modelId: config.modelId,
         region: config.region,

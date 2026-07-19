@@ -4,8 +4,12 @@ import {
   DIRECTIONS_PLUGIN_ID,
   type GeoLibreMapControlPosition,
   GRATICULE_PLUGIN_ID,
+  CLOUDS_PLUGIN_ID,
+  PRECIPITATION_PLUGIN_ID,
   REVERSE_GEOCODE_PLUGIN_ID,
   EFFECTS_PLUGIN_ID,
+  ROUTE_ANIMATION_PLUGIN_ID,
+  SUN_PLUGIN_ID,
   WEB_SERVICE_PLUGIN_IDS,
 } from "@geolibre/plugins";
 import {
@@ -25,11 +29,7 @@ import {
 import { Puzzle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { usePluginRegistry } from "../../../hooks/usePlugins";
-import {
-  type AppApi,
-  PLUGIN_POSITION_ITEMS,
-  type ToolbarChrome,
-} from "./constants";
+import { type AppApi, PLUGIN_POSITION_ITEMS, type ToolbarChrome } from "./constants";
 
 type PluginRegistry = ReturnType<typeof usePluginRegistry>;
 type RegisteredPlugin = PluginRegistry["plugins"][number];
@@ -64,10 +64,14 @@ export function PluginsMenu({
 
   const renderPluginMenuItem = (p: RegisteredPlugin) => {
     const pluginPosition = getMapControlPosition(p.id);
+    // Translate the plugin's display name when a locale string exists for its id,
+    // falling back to the registered (English) name — brand/proper-noun plugins
+    // (Mapillary, NASA Earthdata, …) simply have no key and stay as-is.
+    const pluginName = t(`toolbar.plugin.${p.id}`, { defaultValue: p.name });
     if (!pluginPosition) {
       return (
         <DropdownMenuItem key={p.id} onClick={() => toggle(p.id, appApi)}>
-          {p.name}
+          {pluginName}
           {isActive(p.id) ? " ✓" : ""}
         </DropdownMenuItem>
       );
@@ -76,25 +80,19 @@ export function PluginsMenu({
     return (
       <DropdownMenuSub key={p.id}>
         <DropdownMenuSubTrigger>
-          {p.name}
+          {pluginName}
           {isActive(p.id) ? " ✓" : ""}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent>
           <DropdownMenuItem onClick={() => toggle(p.id, appApi)}>
-            {isActive(p.id)
-              ? t("toolbar.item.deactivate")
-              : t("toolbar.item.activate")}
+            {isActive(p.id) ? t("toolbar.item.deactivate") : t("toolbar.item.activate")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuLabel>{t("toolbar.item.position")}</DropdownMenuLabel>
           <DropdownMenuRadioGroup
             value={pluginPosition}
             onValueChange={(position: string) =>
-              setMapControlPosition(
-                p.id,
-                appApi,
-                position as GeoLibreMapControlPosition,
-              )
+              setMapControlPosition(p.id, appApi, position as GeoLibreMapControlPosition)
             }
           >
             {PLUGIN_POSITION_ITEMS.map((position) => (
@@ -116,7 +114,7 @@ export function PluginsMenu({
     (p) => WEB_SERVICE_PLUGIN_ID_SET.has(p.id) && !hiddenPluginIds.has(p.id),
   );
   // The web service plugins render as one grouped submenu, placed where the
-  // first of them appears in registration order (just above Esri Wayback).
+  // first of them appears in registration order (just above Historical Imagery).
   let webServicesRendered = false;
 
   return (
@@ -136,19 +134,24 @@ export function PluginsMenu({
         <DropdownMenuLabel>{t("toolbar.item.activatePlugin")}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {plugins.map((p) => {
-          // Atmospheric Effects, Directions, Reverse Geocode, and Gridlines are
-          // toggled from the Controls menu instead, so they are omitted here to
-          // avoid a duplicate toggle. The deck.gl viz overlay is an internal
-          // renderer driven by the Add Data → "Deck.gl Layer" dialog, not a
+          // Atmospheric Effects, Directions, Reverse Geocode, Gridlines, and the
+          // Weather overlays (Clouds, Precipitation) are toggled from the
+          // Controls menu instead, so they are omitted here to avoid a duplicate
+          // toggle. The deck.gl viz overlay is an internal renderer driven by the
+          // Add Data → "Deck.gl Layer" dialog, not a
           // user-facing toggle, so it is hidden here too. The Components plugin
           // stays registered for in-app use, but its catch-all grid is hidden
           // from the menu now that its panels are reachable through dedicated
           // plugins.
           if (
             p.id === EFFECTS_PLUGIN_ID ||
+            p.id === SUN_PLUGIN_ID ||
+            p.id === ROUTE_ANIMATION_PLUGIN_ID ||
             p.id === DIRECTIONS_PLUGIN_ID ||
             p.id === REVERSE_GEOCODE_PLUGIN_ID ||
             p.id === GRATICULE_PLUGIN_ID ||
+            p.id === CLOUDS_PLUGIN_ID ||
+            p.id === PRECIPITATION_PLUGIN_ID ||
             p.id === DECK_VIZ_PLUGIN_ID ||
             p.id === COMPONENTS_PLUGIN_ID
           ) {
@@ -171,9 +174,7 @@ export function PluginsMenu({
             <DropdownMenuSub key="web-services">
               <DropdownMenuSubTrigger>
                 {t("toolbar.item.webServices")}
-                {webServicePlugins.some((plugin) => isActive(plugin.id))
-                  ? " ✓"
-                  : ""}
+                {webServicePlugins.some((plugin) => isActive(plugin.id)) ? " ✓" : ""}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {webServicePlugins.map(renderPluginMenuItem)}

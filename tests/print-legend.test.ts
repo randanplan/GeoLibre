@@ -33,6 +33,66 @@ function makeLayer(overrides: Partial<GeoLibreLayer>): GeoLibreLayer {
   } as unknown as GeoLibreLayer;
 }
 
+describe("buildLegend rule-based swatches", () => {
+  it("lists drawable rules plus the else rule, skipping disabled and group rules", () => {
+    const legend = buildLegend([
+      makeLayer({
+        id: "a",
+        name: "Zones",
+        style: {
+          vectorStyleMode: "rule-based",
+          vectorRules: [
+            {
+              id: "g",
+              label: "Group",
+              filter: '["==", ["get", "class"], "zone"]',
+              color: "#111111",
+              isElse: false,
+            },
+            {
+              id: "parks",
+              label: "Parks",
+              filter: '["==", ["get", "TYPE"], "park"]',
+              color: "#00ff00",
+              isElse: false,
+              parentId: "g",
+            },
+            {
+              id: "off",
+              label: "Hidden",
+              filter: '["==", ["get", "TYPE"], "x"]',
+              color: "#0000ff",
+              isElse: false,
+              enabled: false,
+            },
+            { id: "e", label: "", filter: "", color: "#cccccc", isElse: true },
+          ],
+        } as unknown as LayerStyle,
+      }),
+    ]);
+    assert.equal(legend.length, 1);
+    assert.deepEqual(legend[0].swatches, [
+      { color: "#00ff00", label: "Parks" },
+      { color: "#cccccc", label: "Other" },
+    ]);
+  });
+
+  it("falls back to the single fill swatch when no rule draws", () => {
+    const legend = buildLegend([
+      makeLayer({
+        id: "a",
+        name: "Zones",
+        style: {
+          vectorStyleMode: "rule-based",
+          fillColor: "#123456",
+          vectorRules: [],
+        } as unknown as LayerStyle,
+      }),
+    ]);
+    assert.deepEqual(legend[0].swatches, [{ color: "#123456" }]);
+  });
+});
+
 describe("buildLegend", () => {
   it("omits hidden layers", () => {
     const legend = buildLegend([
@@ -97,6 +157,128 @@ describe("buildLegend", () => {
     assert.equal(legend[0].swatches.length, 3);
     assert.equal(legend[0].swatches[0].color, "#eef");
     assert.equal(legend[0].swatches[1].label, "≥ 100");
+  });
+
+  const polygonGeojson = {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [1, 0],
+              [1, 1],
+              [0, 0],
+            ],
+          ],
+        },
+        properties: { votes_a: 1, votes_b: 2, youth: 3 },
+      },
+    ],
+  } as GeoJSON.FeatureCollection;
+
+  it("appends a labeled swatch per diagram attribute after the base symbology", () => {
+    const legend = buildLegend([
+      makeLayer({
+        name: "Election",
+        geojson: polygonGeojson,
+        style: {
+          vectorStyleMode: "single",
+          fillColor: "#ff0000",
+          diagramType: "pie",
+          diagramFields: [
+            { property: "votes_a", color: "#111111" },
+            { property: "votes_b", color: "#222222" },
+            { property: "", color: "#333333" },
+          ],
+        } as LayerStyle,
+      }),
+    ]);
+    assert.equal(legend[0].swatches.length, 3);
+    assert.equal(legend[0].swatches[0].color, "#ff0000");
+    assert.deepEqual(legend[0].swatches[1], {
+      color: "#111111",
+      label: "votes_a",
+    });
+    assert.deepEqual(legend[0].swatches[2], {
+      color: "#222222",
+      label: "votes_b",
+    });
+  });
+
+  it("omits diagram swatches when the point renderer suppresses diagrams", () => {
+    const pointGeojson = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [0, 0] },
+          properties: { votes_a: 1 },
+        },
+      ],
+    } as GeoJSON.FeatureCollection;
+    const diagramStyle = {
+      vectorStyleMode: "single",
+      fillColor: "#ff0000",
+      pointRenderer: "cluster",
+      diagramType: "pie",
+      diagramFields: [{ property: "votes_a", color: "#111111" }],
+    } as LayerStyle;
+    const legend = buildLegend([
+      makeLayer({ name: "Stations", geojson: pointGeojson, style: diagramStyle }),
+    ]);
+    assert.equal(legend[0].swatches.length, 1);
+    assert.equal(legend[0].swatches[0].color, "#ff0000");
+
+    // A stale cluster renderer on a layer that is no longer point-only must
+    // not suppress the swatches (mirrors the render gate).
+    const mixedGeojson = {
+      type: "FeatureCollection",
+      features: [
+        ...pointGeojson.features,
+        {
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: [
+              [0, 0],
+              [1, 1],
+            ],
+          },
+          properties: { votes_a: 2 },
+        },
+      ],
+    } as GeoJSON.FeatureCollection;
+    const mixed = buildLegend([
+      makeLayer({ name: "Mixed", geojson: mixedGeojson, style: diagramStyle }),
+    ]);
+    assert.equal(mixed[0].swatches.length, 2);
+  });
+
+  it("appends diagram swatches after graduated ramp swatches", () => {
+    const legend = buildLegend([
+      makeLayer({
+        name: "Population",
+        geojson: polygonGeojson,
+        style: {
+          vectorStyleMode: "graduated",
+          vectorStyleStops: [
+            { value: 0, color: "#eef" },
+            { value: 100, color: "#88a" },
+          ],
+          diagramType: "bar",
+          diagramFields: [{ property: "youth", color: "#444444" }],
+        } as LayerStyle,
+      }),
+    ]);
+    assert.equal(legend[0].swatches.length, 3);
+    assert.deepEqual(legend[0].swatches[2], {
+      color: "#444444",
+      label: "youth",
+    });
   });
 
   it("caps ramp swatches at six samples", () => {
@@ -183,18 +365,12 @@ describe("applyLegendConfig", () => {
   });
 
   it("renames an entry via a label override", () => {
-    const result = applyLegendConfig(
-      base,
-      config({ overrides: { top: { label: "Renamed" } } }),
-    );
+    const result = applyLegendConfig(base, config({ overrides: { top: { label: "Renamed" } } }));
     assert.equal(result[0].name, "Renamed");
   });
 
   it("hides an entry flagged hidden", () => {
-    const result = applyLegendConfig(
-      base,
-      config({ overrides: { top: { hidden: true } } }),
-    );
+    const result = applyLegendConfig(base, config({ overrides: { top: { hidden: true } } }));
     assert.deepEqual(
       result.map((e) => e.name),
       ["Bottom"],
@@ -240,18 +416,12 @@ describe("applyLegendConfig", () => {
   });
 
   it("trims surrounding whitespace from a rendered label", () => {
-    const result = applyLegendConfig(
-      base,
-      config({ overrides: { top: { label: "  Spaced  " } } }),
-    );
+    const result = applyLegendConfig(base, config({ overrides: { top: { label: "  Spaced  " } } }));
     assert.equal(result[0].name, "Spaced");
   });
 
   it("treats a whitespace-only label as no override", () => {
-    const result = applyLegendConfig(
-      base,
-      config({ overrides: { top: { label: "   " } } }),
-    );
+    const result = applyLegendConfig(base, config({ overrides: { top: { label: "   " } } }));
     assert.equal(result[0].name, "Top");
   });
 
@@ -316,16 +486,10 @@ describe("legendEditorRows", () => {
   it("keeps a raw override (with spaces) in the editor but falls back when blank", () => {
     const base = buildLegend([makeLayer({ id: "a", name: "A" })]);
     // A non-blank override is shown verbatim so the input can hold spaces.
-    const spaced = legendEditorRows(
-      base,
-      config({ overrides: { a: { label: "My label " } } }),
-    );
+    const spaced = legendEditorRows(base, config({ overrides: { a: { label: "My label " } } }));
     assert.equal(spaced[0].label, "My label ");
     // A whitespace-only override is treated as no override (shows the default).
-    const blank = legendEditorRows(
-      base,
-      config({ overrides: { a: { label: "   " } } }),
-    );
+    const blank = legendEditorRows(base, config({ overrides: { a: { label: "   " } } }));
     assert.equal(blank[0].label, "A");
   });
 });

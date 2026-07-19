@@ -12,9 +12,7 @@ function style(patch: Partial<LayerStyle> = {}): LayerStyle {
   return { ...DEFAULT_LAYER_STYLE, ...patch };
 }
 
-function layer(
-  patch: Partial<ExportableLayer> & { style?: LayerStyle } = {},
-): ExportableLayer {
+function layer(patch: Partial<ExportableLayer> & { style?: LayerStyle } = {}): ExportableLayer {
   return {
     id: patch.id ?? "layer-1",
     name: patch.name ?? "My Layer",
@@ -69,10 +67,7 @@ function polygons(): FeatureCollection {
 function mixedGeom(): FeatureCollection {
   return {
     type: "FeatureCollection",
-    features: [
-      ...points().features,
-      ...polygons().features,
-    ],
+    features: [...points().features, ...polygons().features],
   };
 }
 
@@ -124,9 +119,7 @@ describe("data-driven renderers", () => {
       points(),
     );
     const circle = layerById(doc, "my-layer-circle");
-    const color = (circle as { paint: Record<string, unknown> }).paint[
-      "circle-color"
-    ];
+    const color = (circle as { paint: Record<string, unknown> }).paint["circle-color"];
     assert.ok(Array.isArray(color));
     assert.equal((color as unknown[])[0], "match");
   });
@@ -145,9 +138,9 @@ describe("data-driven renderers", () => {
       }),
       points(),
     );
-    const color = (
-      layerById(doc, "my-layer-circle") as { paint: Record<string, unknown> }
-    ).paint["circle-color"];
+    const color = (layerById(doc, "my-layer-circle") as { paint: Record<string, unknown> }).paint[
+      "circle-color"
+    ];
     assert.ok(Array.isArray(color));
     assert.equal((color as unknown[])[0], "interpolate");
   });
@@ -177,9 +170,9 @@ describe("data-driven renderers", () => {
       }),
       points(),
     );
-    const color = (
-      layerById(doc, "my-layer-circle") as { paint: Record<string, unknown> }
-    ).paint["circle-color"];
+    const color = (layerById(doc, "my-layer-circle") as { paint: Record<string, unknown> }).paint[
+      "circle-color"
+    ];
     assert.ok(Array.isArray(color));
     assert.equal((color as unknown[])[0], "case");
   });
@@ -277,10 +270,7 @@ describe("geometry-gated warnings", () => {
       expression: JSON.stringify(["get", "name"]),
       dedupe: "unique" as const,
     };
-    const { warnings } = buildMapboxStyle(
-      layer({ style: style({ labels }) }),
-      points(),
-    );
+    const { warnings } = buildMapboxStyle(layer({ style: style({ labels }) }), points());
     assert.ok(!warnings.some((w) => w.toLowerCase().includes("duplicate-label")));
   });
 });
@@ -344,9 +334,7 @@ describe("labels", () => {
     const label = layerById(doc, "my-layer-label");
     assert.ok(label, "label layer present");
     assert.equal(label?.type, "symbol");
-    const textField = (label as { layout: Record<string, unknown> }).layout[
-      "text-field"
-    ];
+    const textField = (label as { layout: Record<string, unknown> }).layout["text-field"];
     assert.ok(Array.isArray(textField));
     assert.ok(typeof (doc as { glyphs?: string }).glyphs === "string");
   });
@@ -426,13 +414,75 @@ describe("graceful degradation warnings", () => {
   });
 
   it("honors layer visibility in the exported layout", () => {
-    const { style: doc } = buildMapboxStyle(
-      layer({ visible: false }),
-      points(),
-    );
+    const { style: doc } = buildMapboxStyle(layer({ visible: false }), points());
     const circle = layerById(doc, "my-layer-circle") as {
       layout: Record<string, unknown>;
     };
     assert.equal(circle.layout.visibility, "none");
+  });
+});
+
+describe("switched-off else rule (#1312)", () => {
+  it("folds the hide-unmatched filter into every render layer", () => {
+    const { style: doc } = buildMapboxStyle(
+      layer({
+        style: style({
+          vectorStyleMode: "rule-based",
+          vectorRules: [
+            {
+              id: "r1",
+              label: "big",
+              filter: JSON.stringify([">", ["get", "value"], 10]),
+              color: "#abcdef",
+              isElse: false,
+            },
+            {
+              id: "r2",
+              label: "",
+              filter: "",
+              color: "#000000",
+              isElse: true,
+              enabled: false,
+            },
+          ],
+        }),
+      }),
+      points(),
+    );
+    const circle = layerById(doc, "my-layer-circle") as { filter: unknown };
+    assert.deepEqual(circle.filter, [
+      "all",
+      ["match", ["geometry-type"], ["Point", "MultiPoint"], true, false],
+      ["any", [">", ["get", "value"], 10]],
+    ]);
+  });
+
+  it("keeps the plain geometry filter while the else rule is enabled", () => {
+    const { style: doc } = buildMapboxStyle(
+      layer({
+        style: style({
+          vectorStyleMode: "rule-based",
+          vectorRules: [
+            {
+              id: "r1",
+              label: "big",
+              filter: JSON.stringify([">", ["get", "value"], 10]),
+              color: "#abcdef",
+              isElse: false,
+            },
+            { id: "r2", label: "", filter: "", color: "#000000", isElse: true },
+          ],
+        }),
+      }),
+      points(),
+    );
+    const circle = layerById(doc, "my-layer-circle") as { filter: unknown };
+    assert.deepEqual(circle.filter, [
+      "match",
+      ["geometry-type"],
+      ["Point", "MultiPoint"],
+      true,
+      false,
+    ]);
   });
 });

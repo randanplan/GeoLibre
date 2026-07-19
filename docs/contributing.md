@@ -81,9 +81,9 @@ schema.
 
 1. Create a feature branch off `main`. Never commit directly to `main`.
 
-    ```bash
-    git switch -c feat/short-description
-    ```
+   ```bash
+   git switch -c feat/short-description
+   ```
 
 2. Make your change, keeping it focused. Match the style of the surrounding
    code rather than introducing new patterns.
@@ -115,13 +115,13 @@ npm run ci
 
 `npm run ci` runs the complete gate that mirrors continuous integration:
 
-| Step | Command | Covers |
-| --- | --- | --- |
-| Build | `npm run build` | TypeScript compile and Vite build |
-| Frontend tests | `npm run test:frontend` | Fast unit tests under `tests/` |
-| Worker typecheck | `npm run test:worker` | The viewer worker package |
-| Backend tests | `npm run test:backend` | `pytest` for the Python sidecar |
-| Rust check | `npm run check:rust` | `cargo check` for the Tauri shell |
+| Step             | Command                 | Covers                            |
+| ---------------- | ----------------------- | --------------------------------- |
+| Build            | `npm run build`         | TypeScript compile and Vite build |
+| Frontend tests   | `npm run test:frontend` | Fast unit tests under `tests/`    |
+| Worker typecheck | `npm run test:worker`   | The viewer worker package         |
+| Backend tests    | `npm run test:backend`  | `pytest` for the Python sidecar   |
+| Rust check       | `npm run check:rust`    | `cargo check` for the Tauri shell |
 
 You only need the toolchains for the areas you touched. A docs-only or
 frontend-only change does not require Rust or Python, though the full `npm run
@@ -139,11 +139,38 @@ uploads its report as an artifact on failure.
 
 ### Coding conventions
 
-- The pre-commit hooks enforce TypeScript compile errors (`npm run build`), LF
-  line endings (`mixed-line-ending --fix=lf`), and basic whitespace (the
-  end-of-file and trailing-whitespace fixers). There is no Prettier or ESLint
-  hook, so match the style of the surrounding code and fix any build errors the
-  hooks surface before committing.
+- Automated formatting runs on every commit via pre-commit hooks.
+  [pre-commit.ci](https://pre-commit.ci) runs the same hooks on every PR
+  (including forks) and auto-commits a `style: auto-format` fix back to the PR
+  branch, so anything the local hooks missed gets fixed automatically. It does
+  not run on push to `main`, so auto-formatted commits never bypass review.
+  Tooling is split by language:
+  - **Python + Jupyter notebooks (`.py`, `.ipynb`)** — [ruff](https://docs.astral.sh/ruff/)
+    formats and lints (`ruff.toml`, line length 100, rules `F`/`I`/`W`/`E`).
+  - **JS/TS/JSON/CSS/YAML/TOML** — [oxfmt](https://github.com/oxc-project/oxc)
+    (npm, NAPI bindings) formats (`.oxfmtrc.json`, 2-space indent, double
+    quotes, semicolons, width 100). Note that oxfmt also sorts `package.json`
+    keys into its conventional order (e.g. `scripts` before `dependencies`), so
+    expect key reordering, not just whitespace changes, when editing those.
+    `ignorePatterns` in `.oxfmtrc.json` keeps oxfmt off paths that either belong
+    to another tool or churn on every build: Jupyter notebooks and Python source
+    (owned by ruff), lockfiles (`package-lock.json`, `pnpm-lock.yaml`,
+    `yarn.lock`), generated/vendored bundles (`dist/`, `build/`, `target/`,
+    `node_modules/`, minified files, `.d.ts`), Vite-plugin output
+    (`*.generated.js`, `*.generated.py`, `cesium/`, `jupyterlite/`), and the
+    machine-generated app assets under `apps/geolibre-desktop/public/` (Cesium
+    assets, MapLibre sprite atlases, the Whitebox tool-catalog snapshot, which
+    grows ~64% under oxfmt). The intentionally malformed
+    `e2e/fixtures/malformed.geojson` fixture is also excluded.
+  - **ESLint** enforces the React Hooks rules on TS/JS; a `npm run build`
+    typecheck runs too.
+- All text files are normalized to LF via `.gitattributes` (`* text=auto eol=lf`),
+  so line endings are consistent across platforms; `core.autocrlf` is overridden.
+- The remaining pre-commit hooks enforce LF line endings (`mixed-line-ending
+  --fix=lf`) and basic whitespace (end-of-file and trailing-whitespace fixers).
+  You rarely need to format by hand — commit once, let the hooks rewrite, then
+  `git add` the fixed files and commit again. Install the hooks after cloning
+  with `pre-commit install`.
 - Do not edit files in `node_modules`. If a third-party MapLibre control needs
   app-specific styling, add a scoped override in
   `apps/geolibre-desktop/src/index.css` limited to that control's class.

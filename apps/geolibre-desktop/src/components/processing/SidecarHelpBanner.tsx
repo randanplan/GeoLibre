@@ -81,8 +81,7 @@ export function SidecarHelpBanner({
   const helpId = useId();
 
   const resolvedTitle = title ?? t("processing.sidecar.unavailableTitle");
-  const resolvedIntro =
-    intro ?? t("processing.sidecar.intro", { sidecarUrl: SIDECAR_URL });
+  const resolvedIntro = intro ?? t("processing.sidecar.intro", { sidecarUrl: SIDECAR_URL });
   // Default to the generic start-server / check-port / restart sequence. The
   // first step branches on desktop vs. browser because only the desktop build
   // can launch the server.
@@ -100,7 +99,7 @@ export function SidecarHelpBanner({
     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-sm">
       <button
         type="button"
-        className="flex w-full items-start gap-2 px-3 py-2 text-left"
+        className="flex w-full items-start gap-2 px-3 py-2 text-start"
         aria-expanded={expanded}
         // Only reference the panel while it is in the DOM; the collapsed banner
         // doesn't render it, and aria-controls must point at an existing node.
@@ -112,18 +111,12 @@ export function SidecarHelpBanner({
           className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
         />
         <span className="min-w-0 flex-1">
-          <span className="block font-medium text-foreground">
-            {resolvedTitle}
-          </span>
+          <span className="block font-medium text-foreground">{resolvedTitle}</span>
           {error && (
-            <span className="mt-0.5 block break-words text-xs text-destructive">
-              {error}
-            </span>
+            <span className="mt-0.5 block break-words text-xs text-destructive">{error}</span>
           )}
           <span className="mt-0.5 block text-xs text-muted-foreground">
-            {expanded
-              ? t("processing.sidecar.hideHelp")
-              : t("processing.sidecar.showHelp")}
+            {expanded ? t("processing.sidecar.hideHelp") : t("processing.sidecar.showHelp")}
           </span>
         </span>
         {expanded ? (
@@ -134,19 +127,14 @@ export function SidecarHelpBanner({
         ) : (
           <ChevronRight
             aria-hidden="true"
-            className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
+            className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground rtl:rotate-180"
           />
         )}
       </button>
 
       {expanded && (
-        <div
-          id={helpId}
-          className="grid gap-3 border-t border-amber-500/30 px-3 py-3"
-        >
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {resolvedIntro}
-          </p>
+        <div id={helpId} className="grid gap-3 border-t border-amber-500/30 px-3 py-3">
+          <p className="text-xs leading-relaxed text-muted-foreground">{resolvedIntro}</p>
 
           {onRunLocally && (
             <div className="grid gap-2 rounded-md border border-border bg-background/60 p-2.5">
@@ -157,9 +145,7 @@ export function SidecarHelpBanner({
                 />
                 {t("processing.sidecar.wasmTipTitle")}
               </p>
-              <p className="text-xs text-muted-foreground">
-                {t("processing.sidecar.wasmTip")}
-              </p>
+              <p className="text-xs text-muted-foreground">{t("processing.sidecar.wasmTip")}</p>
               <Button
                 type="button"
                 size="sm"
@@ -174,10 +160,8 @@ export function SidecarHelpBanner({
           )}
 
           <div className="grid gap-1.5">
-            <p className="text-xs font-medium text-foreground">
-              {resolvedTroubleshootingTitle}
-            </p>
-            <ol className="grid list-decimal gap-1 pl-5 text-xs text-muted-foreground">
+            <p className="text-xs font-medium text-foreground">{resolvedTroubleshootingTitle}</p>
+            <ol className="grid list-decimal gap-1 ps-5 text-xs text-muted-foreground">
               {resolvedSteps.map((step, index) => (
                 // index is a safe key: caller-authored fixed list, never reordered
                 <li key={index}>{step}</li>

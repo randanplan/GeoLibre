@@ -1,6 +1,6 @@
 # Getting Started
 
-[![Launch GeoLibre Web](https://img.shields.io/badge/Launch-GeoLibre%20Web-green.svg)](https://web.geolibre.app/?url=https://share.geolibre.app/giswqs/3d-tiles.geolibre.json)
+[![Launch GeoLibre Web](https://img.shields.io/badge/Launch-GeoLibre%20Web-green.svg)](https://web.geolibre.app/)
 [![GeoLibre shared project](https://img.shields.io/badge/GeoLibre-share-green.svg)](https://share.geolibre.app)
 [![GeoLibre plugins](https://img.shields.io/badge/GeoLibre-plugins-green.svg)](https://plugins.geolibre.app)
 [![image](https://img.shields.io/pypi/v/geolibre.svg)](https://pypi.python.org/pypi/geolibre)
@@ -120,6 +120,18 @@ The published image is available from GitHub Container Registry:
 ```bash
 docker pull ghcr.io/opengeos/geolibre:latest
 docker run --rm -p 8080:80 ghcr.io/opengeos/geolibre:latest
+```
+
+To require a username and password, set `GEOLIBRE_AUTH_USER` and
+`GEOLIBRE_AUTH_PASSWORD`; nginx then protects the app and the `/sidecar` API
+with HTTP Basic Auth (a single shared credential). Pair it with a
+TLS-terminating reverse proxy outside trusted networks:
+
+```bash
+docker run --rm -p 8080:80 \
+  -e GEOLIBRE_AUTH_USER=admin \
+  -e GEOLIBRE_AUTH_PASSWORD='change-me' \
+  ghcr.io/opengeos/geolibre:latest
 ```
 
 For deployments under a URL subpath, pass the app base at build time:

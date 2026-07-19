@@ -15,10 +15,7 @@ import {
   startMartinServer,
   stopMartinServer,
 } from "../../../../lib/martin";
-import {
-  postgisFeatureKeys,
-  registerPostgisConnection,
-} from "../../../../lib/postgis-connections";
+import { postgisFeatureKeys, registerPostgisConnection } from "../../../../lib/postgis-connections";
 import { startGeoLibreSidecar } from "../../../../lib/sidecar";
 import { isTauri } from "../../../../lib/tauri-io";
 import {
@@ -29,6 +26,8 @@ import {
   savedPostgresConnectionLabel,
 } from "../helpers";
 import { AddDataSourceForm, useAddDataSource } from "../shared";
+import { martinSourceMatchesTable } from "../martin-source-match";
+import type { OpenAddDataPostgres } from "../open-add-data";
 
 type PostgresLoadMode = "tiles" | "editable";
 
@@ -36,12 +35,25 @@ function postgisTableKey(table: PostgisTableInfo): string {
   return `${table.schema}.${table.table}`;
 }
 
-export function PostgresSource() {
+interface PostgresSourceProps {
+  /** Prefill from the Browser panel (saved connection / clicked table). */
+  initialPostgres?: OpenAddDataPostgres;
+}
+
+export function PostgresSource({ initialPostgres }: PostgresSourceProps) {
   const { t } = useTranslation();
   const source = useAddDataSource(t("addData.postgres.defaultName"));
   const { martin } = source.shell;
   const [postgresConnectionString, setPostgresConnectionString] = useState(
-    () => readSavedPostgresConnections()[0] ?? "",
+    () => initialPostgres?.connection ?? readSavedPostgresConnections()[0] ?? "",
+  );
+  // A table clicked in the Browser panel to auto-select once a Connect
+  // populates the source/table list (the user still triggers the desktop-only
+  // Connect; this just spares them re-picking the table they came in for).
+  const desiredTableRef = useRef(
+    initialPostgres?.table
+      ? { schema: initialPostgres.schema, table: initialPostgres.table }
+      : null,
   );
   const [savedPostgresConnections, setSavedPostgresConnections] = useState(() =>
     readSavedPostgresConnections(),
@@ -65,14 +77,43 @@ export function PostgresSource() {
   // because input edits bump that token without starting a request (guarding
   // on it in `finally` would leave isSubmitting stuck true).
   const connectFlightRef = useRef(0);
+  // Invalidation token for the tiles-mode Martin connect, mirroring
+  // listRequestRef for the editable list: a connection-string change bumps it
+  // so an in-flight connect can't revive a server/catalog for the previous
+  // database after the user has moved on.
+  const martinRequestRef = useRef(0);
+
+  // Clear the (shell-owned) Martin connection state so a stale server/catalog
+  // from a previous connection can't be submitted (and submit is disabled)
+  // after the connection string changes.
+  const clearMartinState = () => {
+    martinRequestRef.current += 1;
+    // A completed connect leaves a real Martin process running. stopTransient
+    // (on dialog close) only stops it while martin.server is set, so stop it
+    // here before clearing the state — otherwise it leaks, and since the Rust
+    // side refuses a second concurrent server a later reconnect would fail.
+    // An in-flight connect (server not yet set) is instead torn down by
+    // handleConnectPostgres's own staleness checks.
+    if (martin.server) {
+      void stopMartinServer().catch(() => {});
+    }
+    martin.setServer(null);
+    martin.setSources([]);
+    martin.setSelectedSourceId("");
+    martin.setStatus(null);
+  };
 
   // Reset the (shell-owned) Martin connection when the source opens, matching
   // the original dialog: a running server is preserved across reopens only
-  // after a layer was added.
+  // after a layer was added. But when opened from a Browser-panel table click
+  // (initialPostgres), that preserve behavior would leave the previous add's
+  // server/source connected — and submittable — for a *different* clicked
+  // table, so force a clean slate (stopping the old server) instead.
   useEffect(() => {
-    martin.resetOnOpen();
-    // Mount-only: `martin` is intentionally excluded from the deps — re-running
-    // resetOnOpen on every render would clear connection state mid-flow.
+    if (initialPostgres) clearMartinState();
+    else martin.resetOnOpen();
+    // Mount-only: `martin`/`clearMartinState` are intentionally excluded from
+    // the deps — re-running on every render would clear state mid-flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -131,11 +172,24 @@ export function PostgresSource() {
       setSavedPostgresConnections(rememberPostgresConnection(connectionString));
       setPostgisConnection(connectionString);
       setPostgisTables(tables);
-      // Default to the first writable table (single-column primary key);
-      // read-only tables are listed but disabled, so with no writable table
-      // nothing is preselected and the submit stays disabled.
-      const defaultTable = tables.find((table) => table.primary_key);
+      // Prefer the table the user clicked in the Browser panel (when writable),
+      // else the first writable table (single-column primary key); read-only
+      // tables are listed but disabled, so with no writable table nothing is
+      // preselected and the submit stays disabled.
+      const desired = desiredTableRef.current;
+      const desiredTable = desired
+        ? tables.find(
+            (table) =>
+              table.primary_key &&
+              table.table === desired.table &&
+              (!desired.schema || table.schema === desired.schema),
+          )
+        : undefined;
+      const defaultTable = desiredTable ?? tables.find((table) => table.primary_key);
       setSelectedTableKey(defaultTable ? postgisTableKey(defaultTable) : "");
+      // Consumed once: a later reconnect on the same connection must not undo a
+      // manual table pick by re-applying the originally-clicked table.
+      desiredTableRef.current = null;
       setPostgisStatus(
         tables.length > 0
           ? t("addData.postgres.statusTablesFound", { count: tables.length })
@@ -154,6 +208,7 @@ export function PostgresSource() {
   };
 
   const handleConnectPostgres = async () => {
+    const requestToken = ++martinRequestRef.current;
     source.setError(null);
     martin.setStatus(null);
     source.shell.setIsSubmitting(true);
@@ -180,24 +235,50 @@ export function PostgresSource() {
         connectionString,
         defaultSrid: postgresDefaultSrid,
       });
+      if (martinRequestRef.current !== requestToken) {
+        // The connection string changed while connecting; discard this server
+        // for the now-stale database rather than showing it as connected.
+        await stopMartinServer().catch(() => {});
+        return;
+      }
       setSavedPostgresConnections(rememberPostgresConnection(connectionString));
       martin.setServer(server);
       martin.setStatus(t("addData.postgres.statusReadingCatalog"));
 
       const sources = await fetchMartinCatalog(server);
+      if (martinRequestRef.current !== requestToken) {
+        // Mirror the earlier staleness check: a superseded request must stop
+        // its server rather than leaving it running in the background.
+        await stopMartinServer().catch(() => {});
+        return;
+      }
       martin.setSources(sources);
-      martin.setSelectedSourceId(sources[0]?.id ?? "");
+      // Preselect the table the user clicked in the Browser panel, if Martin
+      // published it; otherwise fall back to the first source.
+      const desired = desiredTableRef.current;
+      const match = desired
+        ? sources.find((s) => martinSourceMatchesTable(s.id, desired.schema, desired.table))
+        : undefined;
+      martin.setSelectedSourceId(match?.id ?? sources[0]?.id ?? "");
+      // Consumed once: a later reconnect on the same connection must not undo a
+      // manual source pick by re-applying the originally-clicked table.
+      desiredTableRef.current = null;
       martin.setStatus(
         sources.length > 0
           ? t("addData.postgres.statusFound", { count: sources.length })
           : t("addData.postgres.statusNoSources"),
       );
     } catch (err) {
-      martin.setServer(null);
-      source.setError(
-        errorMessage(err, t("addData.postgres.errorConnect")),
-      );
-      martin.setStatus(null);
+      // Ignore a superseded call's failure so it can't wipe a fresher, working
+      // connection or show a misleading error for a connection the user has
+      // already moved on from. (finally stays unguarded — clearMartinState also
+      // bumps this token without starting a request, so guarding it would leave
+      // the Connect button stuck disabled.)
+      if (martinRequestRef.current === requestToken) {
+        martin.setServer(null);
+        source.setError(errorMessage(err, t("addData.postgres.errorConnect")));
+        martin.setStatus(null);
+      }
     } finally {
       source.shell.setIsSubmitting(false);
     }
@@ -229,17 +310,12 @@ export function PostgresSource() {
       throw new Error(t("addData.postgres.errorNoVectorLayers"));
     }
 
-    const summary = martin.sources.find(
-      (candidate) => candidate.id === sourceId,
-    );
+    const summary = martin.sources.find((candidate) => candidate.id === sourceId);
     const tilejsonUrl = martinTileJsonUrl(server, sourceId);
     martin.markLayerAdded();
     source.addAndClose(
       createBaseLayer(
-        source.layerName.trim() ||
-          tilejson.name ||
-          summary?.name ||
-          sourceId,
+        source.layerName.trim() || tilejson.name || summary?.name || sourceId,
         "vector-tiles",
         {
           type: "vector",
@@ -271,9 +347,7 @@ export function PostgresSource() {
   // the layer metadata) so "Save edits to PostGIS table" can commit changes
   // back without persisting credentials in the project file.
   const addEditableTable = async (tableKey: string) => {
-    const table = postgisTables.find(
-      (candidate) => postgisTableKey(candidate) === tableKey,
-    );
+    const table = postgisTables.find((candidate) => postgisTableKey(candidate) === tableKey);
     if (!table) {
       throw new Error(t("addData.postgres.errorSelectTable"));
     }
@@ -347,9 +421,7 @@ export function PostgresSource() {
       error={source.error}
       submitDisabled={
         source.isSubmitting ||
-        (loadMode === "editable"
-          ? !selectedTableKey
-          : !martin.server || !martin.selectedSourceId)
+        (loadMode === "editable" ? !selectedTableKey : !martin.server || !martin.selectedSourceId)
       }
     >
       <div className="space-y-3">
@@ -359,25 +431,17 @@ export function PostgresSource() {
           </p>
         ) : null}
         <div className="space-y-1.5">
-          <Label htmlFor="postgres-load-mode">
-            {t("addData.postgres.loadMode")}
-          </Label>
+          <Label htmlFor="postgres-load-mode">{t("addData.postgres.loadMode")}</Label>
           <Select
             id="postgres-load-mode"
             value={loadMode}
-            onChange={(event) =>
-              setLoadMode(event.target.value as PostgresLoadMode)
-            }
+            onChange={(event) => setLoadMode(event.target.value as PostgresLoadMode)}
           >
             <option value="tiles">{t("addData.postgres.loadModeTiles")}</option>
-            <option value="editable">
-              {t("addData.postgres.loadModeEditable")}
-            </option>
+            <option value="editable">{t("addData.postgres.loadModeEditable")}</option>
           </Select>
           {loadMode === "editable" ? (
-            <p className="text-xs text-muted-foreground">
-              {t("addData.postgres.editableNotice")}
-            </p>
+            <p className="text-xs text-muted-foreground">{t("addData.postgres.editableNotice")}</p>
           ) : null}
         </div>
         {savedPostgresConnections.length > 0 ? (
@@ -400,12 +464,18 @@ export function PostgresSource() {
                   setSelectedTableKey("");
                   setPostgisConnection("");
                   setPostgisStatus(null);
+                  // A different database also invalidates the tiles-mode Martin
+                  // connection, so a layer from the old server can't be added.
+                  clearMartinState();
+                  // The Browser-panel table preselect belongs to the connection
+                  // it was opened for; once the user switches connections it no
+                  // longer applies and must not preselect a same-named table in
+                  // a different database.
+                  desiredTableRef.current = null;
                 }
               }}
             >
-              <option value="">
-                {t("addData.postgres.selectSavedConnection")}
-              </option>
+              <option value="">{t("addData.postgres.selectSavedConnection")}</option>
               {savedPostgresConnections.map((connection) => (
                 <option key={connection} value={connection}>
                   {savedPostgresConnectionLabel(connection)}
@@ -415,9 +485,7 @@ export function PostgresSource() {
           </div>
         ) : null}
         <div className="space-y-1.5">
-          <Label htmlFor="postgres-connection">
-            {t("addData.postgres.connectionString")}
-          </Label>
+          <Label htmlFor="postgres-connection">{t("addData.postgres.connectionString")}</Label>
           <Input
             id="postgres-connection"
             type="password"
@@ -435,6 +503,10 @@ export function PostgresSource() {
                 setSelectedTableKey("");
                 setPostgisConnection("");
                 setPostgisStatus(null);
+                // See the saved-connection handler: a connection change voids
+                // the tiles-mode Martin connection and the table preselect.
+                clearMartinState();
+                desiredTableRef.current = null;
               }
             }}
           />
@@ -443,17 +515,13 @@ export function PostgresSource() {
           <div className="space-y-1.5">
             {loadMode === "tiles" ? (
               <>
-                <Label htmlFor="postgres-default-srid">
-                  {t("addData.postgres.defaultSrid")}
-                </Label>
+                <Label htmlFor="postgres-default-srid">{t("addData.postgres.defaultSrid")}</Label>
                 <Input
                   id="postgres-default-srid"
                   inputMode="numeric"
                   placeholder={t("addData.common.optional")}
                   value={postgresDefaultSrid}
-                  onChange={(event) =>
-                    setPostgresDefaultSrid(event.target.value)
-                  }
+                  onChange={(event) => setPostgresDefaultSrid(event.target.value)}
                 />
               </>
             ) : null}
@@ -463,11 +531,7 @@ export function PostgresSource() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={
-                  loadMode === "editable"
-                    ? handleConnectEditable
-                    : handleConnectPostgres
-                }
+                onClick={loadMode === "editable" ? handleConnectEditable : handleConnectPostgres}
                 disabled={source.isSubmitting || !isTauri()}
               >
                 {t("addData.postgres.connect")}
@@ -493,9 +557,7 @@ export function PostgresSource() {
         ) : null}
         {loadMode === "editable" && postgisTables.length > 0 ? (
           <div className="space-y-1.5">
-            <Label htmlFor="postgis-table">
-              {t("addData.postgres.editableTable")}
-            </Label>
+            <Label htmlFor="postgis-table">{t("addData.postgres.editableTable")}</Label>
             <Select
               id="postgis-table"
               value={selectedTableKey}
@@ -508,9 +570,7 @@ export function PostgresSource() {
                 // to save edits back, which needs a primary key.
                 return (
                   <option key={key} value={key} disabled={!table.primary_key}>
-                    {table.primary_key
-                      ? key
-                      : t("addData.postgres.tableReadOnly", { table: key })}
+                    {table.primary_key ? key : t("addData.postgres.tableReadOnly", { table: key })}
                   </option>
                 );
               })}
@@ -519,15 +579,11 @@ export function PostgresSource() {
         ) : null}
         {loadMode === "tiles" && martin.sources.length > 0 ? (
           <div className="space-y-1.5">
-            <Label htmlFor="martin-source">
-              {t("addData.postgres.martinSource")}
-            </Label>
+            <Label htmlFor="martin-source">{t("addData.postgres.martinSource")}</Label>
             <Select
               id="martin-source"
               value={martin.selectedSourceId}
-              onChange={(event) =>
-                martin.setSelectedSourceId(event.target.value)
-              }
+              onChange={(event) => martin.setSelectedSourceId(event.target.value)}
             >
               {martin.sources.map((martinSource) => (
                 <option key={martinSource.id} value={martinSource.id}>

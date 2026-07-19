@@ -7,6 +7,7 @@ import {
   Loader2,
   Send,
   Settings,
+  ShieldAlert,
   Sparkles,
   Square,
   Wrench,
@@ -16,6 +17,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -35,10 +37,7 @@ import {
   type AssistantProviderId,
 } from "../../lib/assistant/provider";
 // Paired with MapCanvas so it suspends pointer interaction while dragging.
-import {
-  PANEL_RESIZE_END_EVENT,
-  PANEL_RESIZE_START_EVENT,
-} from "../../lib/panel-resize";
+import { PANEL_RESIZE_END_EVENT, PANEL_RESIZE_START_EVENT } from "../../lib/panel-resize";
 
 const DEFAULT_PANEL_HEIGHT = 360;
 const MIN_PANEL_HEIGHT = 160;
@@ -156,31 +155,94 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [hasKey, setHasKey] = useState(() => hasProviderKey());
-  const [providers, setProviders] = useState<AssistantProviderId[]>(() =>
-    availableProviders(),
-  );
+  const [providers, setProviders] = useState<AssistantProviderId[]>(() => availableProviders());
   const [provider, setProvider] = useState<AssistantProviderId | null>(() => {
     const stored = loadStored(PROVIDER_STORAGE_KEY);
-    return stored &&
-      ASSISTANT_PROVIDER_IDS.includes(stored as AssistantProviderId)
+    return stored && ASSISTANT_PROVIDER_IDS.includes(stored as AssistantProviderId)
       ? (stored as AssistantProviderId)
       : null;
   });
-  const [model, setModel] = useState<string>(
-    () => loadStored(MODEL_STORAGE_KEY) ?? "",
-  );
+  const [model, setModel] = useState<string>(() => loadStored(MODEL_STORAGE_KEY) ?? "");
+
+  // Queue of model-generated code snippets (run_python / run_maplibre_js)
+  // awaiting the user's approval, each with the promise resolver its tool
+  // callback is blocked on. A queue (not a single slot) so two tool calls
+  // dispatched before the user responds to the first don't drop the first
+  // request's resolver — they are shown and resolved one at a time.
+  //
+  // The ref is authoritative: it's read/drained synchronously (including in the
+  // unmount cleanup, where a React state updater is not guaranteed to run and
+  // must not carry side effects). The state only mirrors the ref for rendering.
+  type PendingCode = {
+    id: number;
+    tool: "run_python" | "run_maplibre_js";
+    code: string;
+    resolve: (approved: boolean) => void;
+  };
+  const codeQueueRef = useRef<PendingCode[]>([]);
+  const [codeQueue, setCodeQueue] = useState<PendingCode[]>([]);
+  // Once the user opts in, skip the prompt for the rest of this session.
+  const alwaysAllowCodeRef = useRef(false);
+  // Monotonic id so each queued prompt has a stable React key.
+  const codeReqIdRef = useRef(0);
+
+  // Stable (only touches the ref + the stable state setter) so the session
+  // useMemo below can depend on it without rebuilding the session each render.
+  const commitQueue = useCallback((next: PendingCode[]): void => {
+    codeQueueRef.current = next;
+    setCodeQueue(next);
+  }, []);
+
+  // Resolve the head request and advance the queue. "Always allow" only skips
+  // *future* confirmations (via alwaysAllowCodeRef); items already queued behind
+  // the head are still surfaced for individual review — otherwise a second,
+  // unreviewed snippet the model queued in the same turn would be rubber-stamped.
+  const decideCode = (approved: boolean, alwaysAllow: boolean): void => {
+    if (approved && alwaysAllow) alwaysAllowCodeRef.current = true;
+    const queue = codeQueueRef.current;
+    if (queue.length === 0) return;
+    const [head, ...rest] = queue;
+    head.resolve(approved);
+    commitQueue(rest);
+  };
+
+  // Decline every queued request (used when the run is stopped/torn down).
+  const declineAllPendingCode = (): void => {
+    for (const item of codeQueueRef.current) item.resolve(false);
+    commitQueue([]);
+  };
 
   // One session per mounted panel; conversation history lives inside it.
   const session = useMemo(
     () =>
       new AssistantSession({
         getMapController: () => mapControllerRef.current,
+        // Gate assistant-authored code behind an explicit confirmation (unless
+        // the user has opted into always-allow for this session). Prompt-injected
+        // content could otherwise make the model run code that exfiltrates data.
+        confirmCodeExecution: ({ tool, code }) =>
+          alwaysAllowCodeRef.current
+            ? Promise.resolve(true)
+            : new Promise<boolean>((resolve) => {
+                const id = (codeReqIdRef.current += 1);
+                commitQueue([...codeQueueRef.current, { id, tool, code, resolve }]);
+              }),
       }),
-    [mapControllerRef],
+    [mapControllerRef, commitQueue],
   );
 
-  // Tear down the session and any in-flight run on unmount.
-  useEffect(() => () => session.cancel(), [session]);
+  // Tear down the session and any in-flight run on unmount. Drain the queue ref
+  // synchronously (resolving each pending approval as declined) so their blocked
+  // tool promises don't hang; done directly on the ref, not via a state updater
+  // that may never run after unmount.
+  useEffect(
+    () => () => {
+      session.cancel();
+      for (const item of codeQueueRef.current) item.resolve(false);
+      codeQueueRef.current = [];
+    },
+    [session],
+  );
 
   // On unmount mid-drag, tear down the drag's window listeners.
   useEffect(() => () => resizeCleanupRef.current?.(), []);
@@ -200,9 +262,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
   // the stored choice has no key (e.g. its key was removed).
   useEffect(() => {
     if (providers.length === 0) return;
-    setProvider((current) =>
-      current && providers.includes(current) ? current : providers[0],
-    );
+    setProvider((current) => (current && providers.includes(current) ? current : providers[0]));
   }, [providers]);
 
   // Push the resolved provider/model into the session. Selecting null lets the
@@ -213,8 +273,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
       return;
     }
     const models = PROVIDER_MODELS[provider];
-    const effectiveModel =
-      model && models.includes(model) ? model : defaultModelFor(provider);
+    const effectiveModel = model && models.includes(model) ? model : defaultModelFor(provider);
     if (effectiveModel !== model) setModel(effectiveModel);
     session.setSelection({ provider, model: effectiveModel });
   }, [provider, model, session]);
@@ -251,18 +310,12 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
         if (event.type === "text") {
           setTurns((prev) =>
             prev.map((turn) =>
-              turn.id === assistantId
-                ? { ...turn, text: turn.text + event.text }
-                : turn,
+              turn.id === assistantId ? { ...turn, text: turn.text + event.text } : turn,
             ),
           );
         } else {
           const label = describeTool(event.name, event.input);
-          const detail = event.error
-            ? label
-              ? `${label} — ${event.error}`
-              : event.error
-            : label;
+          const detail = event.error ? (label ? `${label} — ${event.error}` : event.error) : label;
           const toolId = (turnIdRef.current += 1);
           setTurns((prev) => {
             const index = prev.findIndex((turn) => turn.id === assistantId);
@@ -294,8 +347,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
       // Drop the assistant turn if it never produced text (e.g. tool-only run).
       setTurns((prev) =>
         prev.filter(
-          (turn) =>
-            !(turn.id === assistantId && turn.role === "assistant" && !turn.text),
+          (turn) => !(turn.id === assistantId && turn.role === "assistant" && !turn.text),
         ),
       );
       // Only clear the running state if no newer send has superseded this one
@@ -310,6 +362,9 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
   const stop = () => {
     cancelledGenerationRef.current = sendGenerationRef.current;
     session.cancel();
+    // Decline any code awaiting approval so a stopped run doesn't leave the
+    // confirmation prompt (and its blocked tool promises) hanging.
+    declineAllPendingCode();
     runningRef.current = false;
     setRunning(false);
   };
@@ -427,7 +482,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
             {t("assistant.thinking")}
           </span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           {hasKey && provider && providers.length > 0 ? (
             <>
               {providers.length > 1 ? (
@@ -436,9 +491,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
                   className="h-8 w-auto text-xs"
                   value={provider}
                   disabled={running}
-                  onChange={(event) =>
-                    onProviderChange(event.target.value as AssistantProviderId)
-                  }
+                  onChange={(event) => onProviderChange(event.target.value as AssistantProviderId)}
                 >
                   {providers.map((id) => (
                     <option key={id} value={id}>
@@ -498,9 +551,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
           <div className="mx-auto flex max-w-md flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 shrink-0 text-primary" />
-              <p className="font-medium text-foreground">
-                {t("assistant.setupTitle")}
-              </p>
+              <p className="font-medium text-foreground">{t("assistant.setupTitle")}</p>
             </div>
             <p className="text-muted-foreground">{t("assistant.setupStatus")}</p>
             <div className="rounded-md border bg-muted/40 p-2">
@@ -509,22 +560,15 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
               </p>
               <ul aria-label={t("assistant.setupProviders")} className="space-y-1">
                 {SETUP_PROVIDERS.map(({ id, envs }) => (
-                  <li
-                    key={id}
-                    className="flex items-start justify-between gap-3 text-xs"
-                  >
-                    <span className="shrink-0 text-foreground">
-                      {PROVIDER_LABELS[id]}
-                    </span>
+                  <li key={id} className="flex items-start justify-between gap-3 text-xs">
+                    <span className="shrink-0 text-foreground">{PROVIDER_LABELS[id]}</span>
                     {/* One chip per variable so a multi-credential provider
                         never reads as a single oddly-named env var. */}
-                    <span className="flex flex-wrap justify-end gap-x-1 gap-y-0.5 text-right font-mono text-[11px] text-muted-foreground">
+                    <span className="flex flex-wrap justify-end gap-x-1 gap-y-0.5 text-end font-mono text-[11px] text-muted-foreground">
                       {envs.map((name, index) => (
                         <span key={name} className="whitespace-nowrap">
                           {index > 0 ? (
-                            <span className="mr-1 text-muted-foreground/60">
-                              +
-                            </span>
+                            <span className="me-1 text-muted-foreground/60">+</span>
                           ) : null}
                           <code>{name}</code>
                         </span>
@@ -558,10 +602,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
             }
             if (turn.role === "error") {
               return (
-                <p
-                  key={turn.id}
-                  className="flex items-start gap-1.5 text-xs text-destructive"
-                >
+                <p key={turn.id} className="flex items-start gap-1.5 text-xs text-destructive">
                   <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>{turn.text}</span>
                 </p>
@@ -569,10 +610,7 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
             }
             if (turn.role === "user") {
               return (
-                <div
-                  key={turn.id}
-                  className="whitespace-pre-wrap font-medium text-foreground"
-                >
+                <div key={turn.id} className="whitespace-pre-wrap font-medium text-foreground">
                   {`❯ ${turn.text}`}
                 </div>
               );
@@ -584,8 +622,8 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
                 className={cn(
                   "text-foreground",
                   "[&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0",
-                  "[&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5",
-                  "[&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5",
+                  "[&_ul]:my-1 [&_ul]:list-disc [&_ul]:ps-5",
+                  "[&_ol]:my-1 [&_ol]:list-decimal [&_ol]:ps-5",
                   "[&_a]:text-primary [&_a]:underline",
                   "[&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs",
                   "[&_pre]:my-1 [&_pre]:overflow-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2",
@@ -604,12 +642,8 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
         // Keep the call to action pinned to the bottom so it is reachable even
         // when the provider list scrolls.
         <div className="border-t px-3 py-2">
-          <Button
-            size="sm"
-            className="w-full"
-            onClick={() => openSettingsSection("ai")}
-          >
-            <Settings className="mr-1 h-4 w-4" />
+          <Button size="sm" className="w-full" onClick={() => openSettingsSection("ai")}>
+            <Settings className="me-1 h-4 w-4" />
             {t("assistant.setupOpenSettings")}
           </Button>
         </div>
@@ -629,13 +663,8 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
             className="min-h-[2.5rem] flex-1 resize-none text-sm"
           />
           {running ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={stop}
-              title={t("assistant.stop")}
-            >
-              <Square className="mr-1 h-4 w-4" />
+            <Button size="sm" variant="outline" onClick={stop} title={t("assistant.stop")}>
+              <Square className="me-1 h-4 w-4" />
               {t("assistant.stop")}
             </Button>
           ) : (
@@ -645,12 +674,115 @@ export function AssistantPanel({ mapControllerRef }: AssistantPanelProps) {
               disabled={!hasKey || !input.trim()}
               title={t("assistant.sendHint")}
             >
-              <Send className="mr-1 h-4 w-4" />
+              <Send className="me-1 h-4 w-4" />
               {t("assistant.send")}
             </Button>
           )}
         </div>
       )}
+
+      {codeQueue.length > 0 ? (
+        <CodeApprovalOverlay
+          key={codeQueue[0].id}
+          tool={codeQueue[0].tool}
+          code={codeQueue[0].code}
+          onDecide={decideCode}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * Modal shown before the assistant runs a `run_python` / `run_maplibre_js`
+ * snippet. Displays the code and requires an explicit decision, with an opt-in
+ * to skip the prompt for the rest of the session.
+ */
+function CodeApprovalOverlay({
+  tool,
+  code,
+  onDecide,
+}: {
+  tool: "run_python" | "run_maplibre_js";
+  code: string;
+  onDecide: (approved: boolean, alwaysAllow: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
+  const language = tool === "run_python" ? "Python" : "JavaScript";
+  // Move focus to the safe default (Decline) when the prompt opens so keyboard
+  // users land inside the dialog, and let Escape dismiss it as a decline.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const declineRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    declineRef.current?.focus();
+  }, []);
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/80 p-4">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("assistant.codeApprovalTitle")}
+        className="flex max-h-full w-full max-w-md flex-col gap-3 rounded-lg border bg-card p-4 shadow-lg"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            onDecide(false, false);
+            return;
+          }
+          // Trap Tab within this security-critical dialog so a keyboard user
+          // can't move focus to background controls while the prompt is open.
+          if (event.key === "Tab") {
+            const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+              'button, input, [href], [tabindex]:not([tabindex="-1"])',
+            );
+            if (!focusables || focusables.length === 0) return;
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+            if (event.shiftKey && active === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && active === last) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4 text-amber-500" />
+          <span className="text-sm font-semibold">{t("assistant.codeApprovalTitle")}</span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("assistant.codeApprovalBody", { language })}
+        </p>
+        <pre className="max-h-48 overflow-auto rounded border bg-muted p-2 text-xs">
+          <code>{code}</code>
+        </pre>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={alwaysAllow}
+            onChange={(event) => setAlwaysAllow(event.target.checked)}
+          />
+          {t("assistant.codeApprovalAlways")}
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button
+            ref={declineRef}
+            size="sm"
+            variant="outline"
+            onClick={() => onDecide(false, false)}
+          >
+            {t("assistant.codeApprovalDecline")}
+          </Button>
+          <Button size="sm" onClick={() => onDecide(true, alwaysAllow)}>
+            {t("assistant.codeApprovalRun")}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

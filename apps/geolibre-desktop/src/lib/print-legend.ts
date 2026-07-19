@@ -3,6 +3,9 @@
  * PDF dependencies so it can be unit tested directly.
  */
 import {
+  diagramsSuppressedByPointRenderer,
+  effectiveVectorRules,
+  isHexColor,
   styleValue,
   type GeoLibreLayer,
   type LayerType,
@@ -62,6 +65,9 @@ export function buildLegend(layers: GeoLibreLayer[]): LegendEntry[] {
     if (isVector) {
       const mode = styleValue(layer.style, "vectorStyleMode");
       const stops = styleValue(layer.style, "vectorStyleStops");
+      // Diagram symbology adds one labeled swatch per charted attribute after
+      // the base symbology's swatches, mirroring the QGIS legend.
+      const diagrams = diagramSwatches(layer);
       if (
         (mode === "graduated" || mode === "categorized") &&
         Array.isArray(stops) &&
@@ -70,14 +76,25 @@ export function buildLegend(layers: GeoLibreLayer[]): LegendEntry[] {
         entries.push({
           id: layer.id,
           name: layer.name,
-          swatches: rampSwatches(stops, mode),
+          swatches: [...rampSwatches(stops, mode), ...diagrams],
         });
         continue;
+      }
+      if (mode === "rule-based") {
+        const swatches = ruleSwatches(layer);
+        if (swatches.length > 0) {
+          entries.push({
+            id: layer.id,
+            name: layer.name,
+            swatches: [...swatches, ...diagrams],
+          });
+          continue;
+        }
       }
       entries.push({
         id: layer.id,
         name: layer.name,
-        swatches: [{ color: styleValue(layer.style, "fillColor") }],
+        swatches: [{ color: styleValue(layer.style, "fillColor") }, ...diagrams],
       });
       continue;
     }
@@ -121,10 +138,7 @@ function hasLabelOverride(label: string | undefined): boolean {
  * Reorder base legend entries to follow {@link LegendConfig.order} (top-first).
  * Layers absent from `order` keep their default position after the listed ones.
  */
-function orderEntries(
-  entries: LegendEntry[],
-  order: string[],
-): LegendEntry[] {
+function orderEntries(entries: LegendEntry[], order: string[]): LegendEntry[] {
   if (order.length === 0) return entries;
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const seen = new Set<string>();
@@ -151,10 +165,7 @@ function orderEntries(
  * @param config - User customizations from the project.
  * @returns Render-ready legend entries.
  */
-export function applyLegendConfig(
-  base: LegendEntry[],
-  config: LegendConfig,
-): LegendEntry[] {
+export function applyLegendConfig(base: LegendEntry[], config: LegendConfig): LegendEntry[] {
   const ordered = orderEntries(base, config.order);
   const result: LegendEntry[] = [];
   for (const entry of ordered) {
@@ -190,11 +201,7 @@ export function applyLegendConfig(
  * the entry when it carries neither a label nor a hidden flag so the persisted
  * config stays minimal.
  */
-function withOverride(
-  config: LegendConfig,
-  key: string,
-  next: LegendItemOverride,
-): LegendConfig {
+function withOverride(config: LegendConfig, key: string, next: LegendItemOverride): LegendConfig {
   const overrides = { ...config.overrides };
   if (next.label === undefined && !next.hidden) {
     delete overrides[key];
@@ -217,16 +224,12 @@ export function setLegendItemLabel(
 ): LegendConfig {
   const current = config.overrides[key] ?? {};
   const trimmed = label.trim();
-  const nextLabel =
-    trimmed === "" || trimmed === defaultLabel.trim() ? undefined : label;
+  const nextLabel = trimmed === "" || trimmed === defaultLabel.trim() ? undefined : label;
   return withOverride(config, key, { ...current, label: nextLabel });
 }
 
 /** Toggle whether a legend item is hidden from the rendered legend. */
-export function toggleLegendItemHidden(
-  config: LegendConfig,
-  key: string,
-): LegendConfig {
+export function toggleLegendItemHidden(config: LegendConfig, key: string): LegendConfig {
   const current = config.overrides[key] ?? {};
   const hidden = !current.hidden;
   return withOverride(config, key, {
@@ -284,10 +287,7 @@ export interface LegendEditorRow {
  * @param config - User customizations from the project.
  * @returns One row per legend entry, with class rows following multi-class entries.
  */
-export function legendEditorRows(
-  base: LegendEntry[],
-  config: LegendConfig,
-): LegendEditorRow[] {
+export function legendEditorRows(base: LegendEntry[], config: LegendConfig): LegendEditorRow[] {
   const ordered = orderEntries(base, config.order);
   const rows: LegendEditorRow[] = [];
   for (const entry of ordered) {
@@ -302,9 +302,7 @@ export function legendEditorRows(
       // Show the raw override (so the input can hold spaces mid-edit) but fall
       // back to the default when it is blank, matching what applyLegendConfig
       // renders.
-      label: hasLabelOverride(entryOverride?.label)
-        ? (entryOverride?.label as string)
-        : entry.name,
+      label: hasLabelOverride(entryOverride?.label) ? (entryOverride?.label as string) : entry.name,
       hidden: Boolean(entryOverride?.hidden),
       reorderable: true,
     });
@@ -319,9 +317,7 @@ export function legendEditorRows(
         kind: "class",
         color: swatch.color,
         defaultLabel,
-        label: hasLabelOverride(override?.label)
-          ? (override?.label as string)
-          : defaultLabel,
+        label: hasLabelOverride(override?.label) ? (override?.label as string) : defaultLabel,
         hidden: Boolean(override?.hidden),
         reorderable: false,
       });
@@ -330,20 +326,58 @@ export function legendEditorRows(
   return rows;
 }
 
+/**
+ * Legend swatches for a layer's diagram symbology: one per charted attribute,
+ * labeled with the attribute name. Empty whenever the deck overlay would not
+ * draw diagrams for the layer (no in-memory GeoJSON, a deck-viz dataset
+ * layer, diagrams off, or a point-only layer whose heatmap/cluster renderer
+ * suppresses them), matching isDiagramLayer's gate so the legend never lists
+ * charts that are not on the map.
+ */
+function diagramSwatches(
+  layer: Pick<GeoLibreLayer, "type" | "geojson" | "style" | "metadata">,
+): { color: string; label: string }[] {
+  if (
+    !layer.geojson ||
+    layer.type === "deckgl-viz" ||
+    layer.metadata.externalDeckLayer === true ||
+    styleValue(layer.style, "diagramType") === "none" ||
+    diagramsSuppressedByPointRenderer(layer.geojson, layer.style)
+  ) {
+    return [];
+  }
+  return styleValue(layer.style, "diagramFields")
+    .filter((field) => field.property !== "")
+    .map((field) => ({ color: field.color, label: field.property }));
+}
+
+/**
+ * Rule-based renderer swatches: one per drawable rule (disabled rules and
+ * group rules are resolved away by {@link effectiveVectorRules}, mirroring the
+ * live map), plus the catch-all else rule when it has a valid color. Labels
+ * fall back to the rule's filter text so unlabeled rules stay identifiable.
+ */
+function ruleSwatches(layer: GeoLibreLayer): { color: string; label: string }[] {
+  const { rules, elseRule } = effectiveVectorRules(layer.style);
+  const limited = rules.length > MAX_RAMP_SWATCHES ? sampleEvenly(rules, MAX_RAMP_SWATCHES) : rules;
+  const swatches = limited.map((rule) => ({
+    color: rule.color,
+    label: rule.label || JSON.stringify(rule.filter),
+  }));
+  if (elseRule && isHexColor(elseRule.color)) {
+    swatches.push({ color: elseRule.color, label: elseRule.label || "Other" });
+  }
+  return swatches;
+}
+
 function rampSwatches(
   stops: VectorStyleStop[],
   mode: "graduated" | "categorized",
 ): { color: string; label: string }[] {
-  const limited =
-    stops.length > MAX_RAMP_SWATCHES
-      ? sampleEvenly(stops, MAX_RAMP_SWATCHES)
-      : stops;
+  const limited = stops.length > MAX_RAMP_SWATCHES ? sampleEvenly(stops, MAX_RAMP_SWATCHES) : stops;
   return limited.map((stop) => ({
     color: stop.color,
-    label:
-      mode === "graduated"
-        ? `≥ ${formatStopValue(stop.value)}`
-        : formatStopValue(stop.value),
+    label: mode === "graduated" ? `≥ ${formatStopValue(stop.value)}` : formatStopValue(stop.value),
   }));
 }
 

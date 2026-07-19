@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 
-import { AVAILABLE_LANGUAGES } from "../i18n";
+import { AVAILABLE_LANGUAGES, setActiveLanguage } from "../i18n";
 import {
   DEFAULT_LANGUAGE,
   languageOptions,
@@ -31,36 +31,35 @@ const OPTIONS = languageOptions(AVAILABLE_LANGUAGES);
  */
 export function useLanguage(): UseLanguageResult {
   const { i18n } = useTranslation();
-  const setDesktopSettings = useDesktopSettingsStore(
-    (s) => s.setDesktopSettings,
-  );
+  const setDesktopSettings = useDesktopSettingsStore((s) => s.setDesktopSettings);
 
   const setLanguage = useCallback(
     (code: string) => {
-      // Persist only after the language has actually switched, so a future
-      // lazy-loaded or remote catalog that fails to load does not leave a
-      // broken language persisted for the next boot. With today's eagerly
-      // bundled catalogs this resolves synchronously.
-      i18n
-        .changeLanguage(code)
-        .then(() => {
+      // `setActiveLanguage` lazily imports the target locale's catalog before
+      // switching and applies the module-scope "latest request wins" guard, so
+      // rapidly picking two uncached locales can't let a slower earlier fetch
+      // clobber the newer selection. It resolves `true` only when this call
+      // actually applied the language — persist the choice only then, so a
+      // superseded or failed switch leaves neither the UI nor the setting on a
+      // language with no strings.
+      setActiveLanguage(code)
+        .then((applied) => {
+          if (!applied) return;
           const current = useDesktopSettingsStore.getState().desktopSettings;
           setDesktopSettings({ ...current, language: code });
         })
         .catch((error: unknown) => {
-          // Today's eager catalogs never reject; if a future async/remote
-          // catalog fails, surface it instead of silently leaving the setting
-          // unpersisted while the UI has already switched.
+          // Only the latest request's genuine fetch failure rejects here; keep
+          // the current language (its catalog is still loaded) and surface it.
           console.error("[GeoLibre] Failed to change language", error);
         });
     },
-    [i18n, setDesktopSettings],
+    [setDesktopSettings],
   );
 
   // i18n.language can be a full tag (e.g. `en-US`); reuse the shared resolver to
   // collapse it to a code we ship.
-  const language =
-    resolveLanguage(i18n.language, AVAILABLE_LANGUAGES) ?? DEFAULT_LANGUAGE;
+  const language = resolveLanguage(i18n.language, AVAILABLE_LANGUAGES) ?? DEFAULT_LANGUAGE;
 
   return { language, options: OPTIONS, setLanguage };
 }

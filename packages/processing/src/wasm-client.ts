@@ -21,10 +21,7 @@ import type {
  * tool's target-CRS coordinates, which the GeoJSON writer would otherwise
  * reproject back to WGS84 for RFC 7946 compliance.
  */
-const VECTOR_OUTPUT_EXTENSION: Record<
-  Exclude<VectorOutputFormat, "geojson">,
-  string
-> = {
+const VECTOR_OUTPUT_EXTENSION: Record<Exclude<VectorOutputFormat, "geojson">, string> = {
   geoparquet: "parquet",
   flatgeobuf: "fgb",
   shapefile: "shp",
@@ -102,12 +99,12 @@ function loadToolsModule(): Promise<ToolsModule> {
   // Reset the memoized promise on failure (e.g. a transient network error) so
   // the next call retries instead of being stuck with a permanently rejected
   // promise for the rest of the session.
-  toolsModulePromise ??= (
-    import("geolibre-wasm/tools") as unknown as Promise<ToolsModule>
-  ).catch((error) => {
-    toolsModulePromise = null;
-    throw error;
-  });
+  toolsModulePromise ??= (import("geolibre-wasm/tools") as unknown as Promise<ToolsModule>).catch(
+    (error) => {
+      toolsModulePromise = null;
+      throw error;
+    },
+  );
   return toolsModulePromise;
 }
 
@@ -142,8 +139,7 @@ function manifestToWhiteboxTool(manifest: ToolManifest): WhiteboxTool {
     summary: manifest.summary,
     category: manifest.category,
     license_tier: manifest.license_tier,
-    source:
-      manifest.source?.toLowerCase() === "geolibre" ? "geolibre" : undefined,
+    source: manifest.source?.toLowerCase() === "geolibre" ? "geolibre" : undefined,
     params: (manifest.params ?? []).map((param) => {
       const mapped: WhiteboxToolParameter = {
         name: param.name,
@@ -248,9 +244,7 @@ function reconcileToolParams(
   catalogParams: WhiteboxToolParameter[] | undefined,
   wasmParams: WhiteboxToolParameter[] | undefined,
 ): WhiteboxToolParameter[] {
-  const catalogByName = new Map(
-    (catalogParams ?? []).map((param) => [param.name, param] as const),
-  );
+  const catalogByName = new Map((catalogParams ?? []).map((param) => [param.name, param] as const));
   return (wasmParams ?? []).map((param) => {
     const catalogParam = catalogByName.get(param.name);
     if (!catalogParam) return param;
@@ -285,9 +279,7 @@ export function mergeWasmToolManifests(
       source: wasm.source ?? tool.source,
     };
   });
-  const geolibreOnly = [...wasmById.values()].filter(
-    (tool) => tool.source === "geolibre",
-  );
+  const geolibreOnly = [...wasmById.values()].filter((tool) => tool.source === "geolibre");
   return [...merged, ...geolibreOnly];
 }
 
@@ -304,15 +296,13 @@ function datasetParameterKind(dataKind: string, suffix: "in" | "out"): string {
 function paramKind(p: WhiteboxToolParameter): string {
   if (p.kind) return String(p.kind).toLowerCase();
   const schema =
-    p.schema && typeof p.schema === "object"
-      ? (p.schema as Record<string, unknown>)
-      : {};
+    p.schema && typeof p.schema === "object" ? (p.schema as Record<string, unknown>) : {};
   const dataset =
     schema.dataset && typeof schema.dataset === "object"
       ? (schema.dataset as Record<string, unknown>)
       : {};
   const dataKind = String(
-    p.data_kind ?? dataset.kind ?? p.type ?? "",
+    p.data_kind ?? schema.data_kind ?? dataset.kind ?? p.type ?? "",
   ).toLowerCase();
   const role = String(p.io_role ?? schema.kind ?? "").toLowerCase();
   if (role === "input") return datasetParameterKind(dataKind, "in");
@@ -353,9 +343,7 @@ export function fileOutputTargetExtension(
  * @param param - The output parameter.
  * @returns `"csv" | "html" | "json"`, or `null` if no text format is implied.
  */
-export function outputTextFormatHint(
-  param: WhiteboxToolParameter,
-): string | null {
+export function outputTextFormatHint(param: WhiteboxToolParameter): string | null {
   const hint = `${param.name ?? ""} ${param.description ?? ""} ${param.type ?? ""}`;
   if (/\bcsv\b/i.test(hint)) return "csv";
   if (/\bhtml\b/i.test(hint)) return "html";
@@ -368,17 +356,15 @@ export function outputTextFormatHint(
     schema.dataset && typeof schema.dataset === "object"
       ? (schema.dataset as Record<string, unknown>)
       : {};
-  const dataKind = String(
-    param.data_kind ?? dataset.kind ?? param.type ?? "",
-  ).toLowerCase();
+  const dataKind = String(param.data_kind ?? dataset.kind ?? param.type ?? "").toLowerCase();
   return dataKind === "table" ? "csv" : null;
 }
 
 function isFeatureCollection(value: unknown): value is FeatureCollection {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      (value as { type?: unknown }).type === "FeatureCollection",
+    typeof value === "object" &&
+    (value as { type?: unknown }).type === "FeatureCollection",
   );
 }
 
@@ -404,13 +390,7 @@ export function isTiff(b: Uint8Array): boolean {
 
 // LAS/LAZ magic: every LAS and LAZ file begins with the signature "LASF".
 function isLas(b: Uint8Array): boolean {
-  return (
-    b.length >= 4 &&
-    b[0] === 0x4c &&
-    b[1] === 0x41 &&
-    b[2] === 0x53 &&
-    b[3] === 0x46
-  );
+  return b.length >= 4 && b[0] === 0x4c && b[1] === 0x41 && b[2] === 0x53 && b[3] === 0x46;
 }
 
 function describeBytes(b: Uint8Array): string {
@@ -473,14 +453,24 @@ export function outputBaseName(toolId: string, paramName: string): string {
 }
 
 /**
+ * GeoLibre-authored subset extractors whose single result COG is written to a
+ * plain-string `output` path (no typed `raster_out` param). Their produced file
+ * is surfaced explicitly after the run; see the fallback in
+ * {@link runWhiteboxToolWasm}.
+ */
+const SUBSET_OUTPUT_TOOL_IDS = new Set([
+  "extract_cog_subset",
+  "extract_wms_subset",
+  "extract_xyz_tile_subset",
+]);
+
+/**
  * Run a Whitebox tool in the browser via WASM. Mirrors `runWhiteboxTool` but
  * executes locally and returns an already-completed {@link WhiteboxJob}. Output
  * values are inline: a `FeatureCollection` for `vector_out`, or a `Uint8Array`
  * (Cloud Optimized GeoTIFF) for `raster_out` - never a server path.
  */
-export async function runWhiteboxToolWasm(
-  request: RunWhiteboxToolRequest,
-): Promise<WhiteboxJob> {
+export async function runWhiteboxToolWasm(request: RunWhiteboxToolRequest): Promise<WhiteboxJob> {
   const { runTool } = await loadToolsModule();
   const encoder = new TextEncoder();
   const input: Record<string, Uint8Array> = {};
@@ -513,17 +503,20 @@ export async function runWhiteboxToolWasm(
       const file = `${name}.geojson`;
       input[file] = encoder.encode(JSON.stringify(geojson));
       args.push(`--${name}=/work/${file}`);
-    } else if (
-      kind === "raster_in" ||
-      kind === "lidar_in" ||
-      kind === "file_in"
-    ) {
+    } else if (kind === "raster_in" || kind === "lidar_in" || kind === "file_in") {
       // Prefer bytes the caller resolved (the dialog fetches the layer's data);
       // otherwise try to fetch the parameter as a URL.
+      const provided = request.parameters[name];
+      const hasValue = typeof provided === "string" ? provided.length > 0 : provided != null;
       const bytes =
-        request.layer_inputs?.[name]?.bytes ??
-        (await fetchBytes(request.parameters[name]));
+        request.layer_inputs?.[name]?.bytes ?? (hasValue ? await fetchBytes(provided) : null);
       if (!bytes) {
+        // An optional data input the user left blank is simply omitted rather
+        // than force-fetched: e.g. extract_cog_subset's `input` when a `url` is
+        // supplied instead (the tool reads the COG by byte-range from that url).
+        // Only a required input, or one with a value that could not be fetched,
+        // is a hard error.
+        if (!param.required && !hasValue) continue;
         throw new Error(
           `Could not read input "${name}" in the browser. Its data is not fetchable here (only available via the sidecar); turn off "Run locally (WASM)" to use the sidecar.`,
         );
@@ -538,8 +531,7 @@ export async function runWhiteboxToolWasm(
           `Input "${name}" is not a readable LAS/LAZ file in the browser (received ${describeBytes(bytes)}). Load a LAS/LAZ file, or use the sidecar.`,
         );
       }
-      const ext =
-        kind === "lidar_in" ? "las" : kind === "file_in" ? "dat" : "tif";
+      const ext = kind === "lidar_in" ? "las" : kind === "file_in" ? "dat" : "tif";
       const file = `${name}.${ext}`;
       input[file] = bytes;
       args.push(`--${name}=/work/${file}`);
@@ -569,9 +561,7 @@ export async function runWhiteboxToolWasm(
       // every such tool fail its own ".csv path" validation regardless of what
       // the user typed (see GeoLibre#1074).
       const ext =
-        kind === "file_out"
-          ? fileOutputTargetExtension(param, request.parameters[name])
-          : "tif";
+        kind === "file_out" ? fileOutputTargetExtension(param, request.parameters[name]) : "tif";
       const file = `${outputBaseName(request.tool_id, name)}.${ext}`;
       outputs.push({ name, file, kind: "bytes" });
       args.push(`--${name}=/work/${file}`);
@@ -625,6 +615,21 @@ export async function runWhiteboxToolWasm(
       if (isFeatureCollection(parsed)) out[entry.name] = parsed;
     } catch {
       // leave this output out
+    }
+  }
+  // The GeoLibre COG/WMS/XYZ subset extractors type their `output` as a plain
+  // string path (not a `raster_out`), so the loop above maps nothing. Surface
+  // their single produced result COG as raw bytes so it still reaches the map
+  // instead of being silently dropped. Scoped to those tool ids (not "any tool
+  // with no typed output") so an unrelated tool's scratch/sidecar/log file is
+  // never mistaken for a result and pushed through the raster loader.
+  if (outputs.length === 0 && SUBSET_OUTPUT_TOOL_IDS.has(request.tool_id)) {
+    for (const [file, bytes] of Object.entries(files)) {
+      // Skip files we supplied as inputs (e.g. a local `input` raster written to
+      // /work before the run) so an unchanged input isn't re-added as a spurious
+      // second layer alongside the real result.
+      if (file in input) continue;
+      out[file.replace(/\.[^.]+$/, "")] = bytes;
     }
   }
   return job(request.tool_id, "succeeded", stdout, out, null);

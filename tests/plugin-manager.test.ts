@@ -6,10 +6,7 @@ import {
   getToolbarMenusSnapshot,
   registerToolbarMenu,
 } from "../packages/plugins/src/toolbar-menu-registry";
-import type {
-  GeoLibreAppAPI,
-  GeoLibrePlugin,
-} from "../packages/plugins/src/types";
+import type { GeoLibreAppAPI, GeoLibrePlugin } from "../packages/plugins/src/types";
 
 const app = {} as GeoLibreAppAPI;
 
@@ -68,11 +65,7 @@ describe("PluginManager URL parameters", () => {
       app,
       "project-1",
     );
-    await manager.handleUrlParameters(
-      new URLSearchParams("other=value"),
-      app,
-      "project-2",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("other=value"), app, "project-2");
     await manager.handleUrlParameters(
       new URLSearchParams("data=https%3A%2F%2Fexample.com%2Fnext.geojson"),
       app,
@@ -104,11 +97,7 @@ describe("PluginManager URL parameters", () => {
     );
     assert.equal(manager.isActive("deep-link-loader"), false);
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=ds.zip"),
-      app,
-      "ctx",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=ds.zip"), app, "ctx");
 
     assert.equal(manager.isActive("deep-link-loader"), true);
     assert.deepEqual(calls, ["ds.zip"]);
@@ -117,11 +106,7 @@ describe("PluginManager URL parameters", () => {
 
     // Second dispatch for the same context: dedup means neither the handler
     // nor activation re-fires for the auto-activated plugin.
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=ds.zip"),
-      app,
-      "ctx",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=ds.zip"), app, "ctx");
     assert.deepEqual(calls, ["ds.zip"]);
     assert.deepEqual(activateApps, [app]);
   });
@@ -141,11 +126,7 @@ describe("PluginManager URL parameters", () => {
       }),
     );
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("other=1"),
-      app,
-      "ctx",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("other=1"), app, "ctx");
 
     assert.equal(activated, false);
     assert.equal(manager.isActive("deep-link-loader"), false);
@@ -166,11 +147,7 @@ describe("PluginManager URL parameters", () => {
       }),
     );
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=ds.zip"),
-      app,
-      "ctx",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=ds.zip"), app, "ctx");
 
     assert.equal(manager.isActive("refuses-activation"), false);
     assert.deepEqual(calls, []);
@@ -202,11 +179,7 @@ describe("PluginManager URL parameters", () => {
     manager.activate("slow-loader", app);
     manager.activate("fast-loader", app);
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
 
     assert.deepEqual(calls, ["slow", "fast"]);
   });
@@ -236,11 +209,7 @@ describe("PluginManager URL parameters", () => {
     manager.activate("broken-loader", app);
     manager.activate("working-loader", app);
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
 
     assert.deepEqual(calls, ["working"]);
   });
@@ -266,21 +235,9 @@ describe("PluginManager URL parameters", () => {
 
     // The first dispatch fails, the second retries and succeeds, and the
     // third is deduped as handled.
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
 
     assert.deepEqual(calls, ["handled"]);
   });
@@ -320,37 +277,14 @@ describe("PluginManager URL parameters", () => {
 
     // Handle the first context, then push it out of the bounded dedup map
     // with eight newer contexts (MAX_HANDLED_URL_CONTEXTS = 8).
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=first"),
-      app,
-      "ctx-first",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=first"), app, "ctx-first");
     for (let i = 0; i < 8; i += 1) {
-      await manager.handleUrlParameters(
-        new URLSearchParams(`data=${i}`),
-        app,
-        `ctx-${i}`,
-      );
+      await manager.handleUrlParameters(new URLSearchParams(`data=${i}`), app, `ctx-${i}`);
     }
     // The evicted context is treated as new again and re-runs the handler.
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=first"),
-      app,
-      "ctx-first",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=first"), app, "ctx-first");
 
-    assert.deepEqual(calls, [
-      "first",
-      "0",
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-      "7",
-      "first",
-    ]);
+    assert.deepEqual(calls, ["first", "0", "1", "2", "3", "4", "5", "6", "7", "first"]);
   });
 
   it("does not evict an in-flight context from the dedup map", async () => {
@@ -383,19 +317,11 @@ describe("PluginManager URL parameters", () => {
       "ctx-first",
     );
     for (let i = 0; i < 8; i += 1) {
-      await manager.handleUrlParameters(
-        new URLSearchParams(`data=${i}`),
-        app,
-        `ctx-${i}`,
-      );
+      await manager.handleUrlParameters(new URLSearchParams(`data=${i}`), app, `ctx-${i}`);
     }
     for (const resolve of resolvers) resolve();
     await firstCall;
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=first"),
-      app,
-      "ctx-first",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=first"), app, "ctx-first");
 
     assert.deepEqual(calls, ["0", "1", "2", "3", "4", "5", "6", "7", "first"]);
   });
@@ -420,21 +346,9 @@ describe("PluginManager URL parameters", () => {
 
     // Start two fire-and-forget calls with different context keys, then
     // re-dispatch the first context while both handlers are still suspended.
-    const callA = manager.handleUrlParameters(
-      new URLSearchParams("data=a"),
-      app,
-      "ctx-a",
-    );
-    const callB = manager.handleUrlParameters(
-      new URLSearchParams("data=b"),
-      app,
-      "ctx-b",
-    );
-    const callARepeat = manager.handleUrlParameters(
-      new URLSearchParams("data=a"),
-      app,
-      "ctx-a",
-    );
+    const callA = manager.handleUrlParameters(new URLSearchParams("data=a"), app, "ctx-a");
+    const callB = manager.handleUrlParameters(new URLSearchParams("data=b"), app, "ctx-b");
+    const callARepeat = manager.handleUrlParameters(new URLSearchParams("data=a"), app, "ctx-a");
     for (const resolve of resolvers) resolve();
     await Promise.all([callA, callB, callARepeat]);
 
@@ -455,18 +369,10 @@ describe("PluginManager URL parameters", () => {
     );
     manager.activate("url-loader", app);
 
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
     manager.deactivate("url-loader", app);
     manager.activate("url-loader", app);
-    await manager.handleUrlParameters(
-      new URLSearchParams("data=value"),
-      app,
-      "project-1",
-    );
+    await manager.handleUrlParameters(new URLSearchParams("data=value"), app, "project-1");
 
     assert.deepEqual(calls, ["handled"]);
   });
@@ -646,10 +552,7 @@ describe("PluginManager toolbar menu scoping", () => {
     // The raw mock app handed to activate(); the manager scopes it internally
     // via scopeAppToPlugin before the plugin ever sees it.
     const mockApp = {
-      registerToolbarMenu: (
-        _menu: unknown,
-        ownerPluginId?: string,
-      ) => {
+      registerToolbarMenu: (_menu: unknown, ownerPluginId?: string) => {
         seen.push(ownerPluginId);
         return () => undefined;
       },
@@ -704,10 +607,7 @@ describe("PluginManager toolbar menu scoping", () => {
     const manager = new PluginManager();
     const seen: Array<string | undefined> = [];
     const mockApp = {
-      registerToolbarMenu: (
-        _menu: unknown,
-        ownerPluginId?: string,
-      ) => {
+      registerToolbarMenu: (_menu: unknown, ownerPluginId?: string) => {
         seen.push(ownerPluginId);
         return () => undefined;
       },
@@ -741,10 +641,7 @@ describe("PluginManager toolbar menu scoping", () => {
     const manager = new PluginManager();
     const seen: Array<string | undefined> = [];
     const mockApp = {
-      registerToolbarMenu: (
-        _menu: unknown,
-        ownerPluginId?: string,
-      ) => {
+      registerToolbarMenu: (_menu: unknown, ownerPluginId?: string) => {
         seen.push(ownerPluginId);
         return () => undefined;
       },
@@ -941,5 +838,69 @@ describe("PluginManager panel auto-expand on restore", () => {
       false,
       "activating a plugin from the menu should still open its panel",
     );
+  });
+});
+
+describe("PluginManager markDefaultActive", () => {
+  it("activates a marked plugin on restore with no saved state", () => {
+    const manager = new PluginManager();
+    const activated: string[] = [];
+    manager.register(
+      testPlugin({
+        id: "bundled-drop-in",
+        activate: () => {
+          activated.push("bundled-drop-in");
+        },
+      }),
+    );
+    manager.markDefaultActive("bundled-drop-in");
+
+    // Marking must NOT activate immediately: unlike built-in activeByDefault
+    // plugins (whose startup side effects are applied idempotently elsewhere),
+    // a drop-in needs its activate(app) called by the restore pass.
+    assert.equal(manager.isActive("bundled-drop-in"), false);
+    assert.deepEqual(activated, []);
+
+    manager.restoreProjectState(null, app);
+    assert.equal(manager.isActive("bundled-drop-in"), true);
+    assert.deepEqual(activated, ["bundled-drop-in"]);
+  });
+
+  it("is overridden by saved state that omits the plugin", () => {
+    const manager = new PluginManager();
+    const activated: string[] = [];
+    manager.register(
+      testPlugin({
+        id: "bundled-drop-in",
+        activate: () => {
+          activated.push("bundled-drop-in");
+        },
+      }),
+    );
+    manager.markDefaultActive("bundled-drop-in");
+
+    manager.restoreProjectState(
+      { manifestUrls: [], activePluginIds: [], mapControlPositions: {}, settings: {} },
+      app,
+    );
+    assert.equal(manager.isActive("bundled-drop-in"), false);
+    assert.deepEqual(activated, []);
+  });
+
+  it("ignores unregistered ids", () => {
+    const manager = new PluginManager();
+    manager.markDefaultActive("never-registered");
+    manager.restoreProjectState(null, app);
+    assert.equal(manager.isActive("never-registered"), false);
+  });
+
+  it("is cleared when the plugin is unregistered", () => {
+    const manager = new PluginManager();
+    manager.register(testPlugin({ id: "bundled-drop-in" }));
+    manager.markDefaultActive("bundled-drop-in");
+    manager.unregister("bundled-drop-in", app);
+
+    manager.restoreProjectState(null, app);
+    assert.equal(manager.isActive("bundled-drop-in"), false);
   });
 });

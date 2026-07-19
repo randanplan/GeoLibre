@@ -1,4 +1,5 @@
 import { useAppStore } from "@geolibre/core";
+import type { Layer } from "@deck.gl/core";
 import type {
   RasterControl,
   RasterControlEventHandler,
@@ -6,6 +7,11 @@ import type {
 } from "maplibre-gl-raster";
 import type { GeoLibreAppAPI, GeoLibreMapControlPosition } from "../types";
 import { ensureMercatorProjection } from "./map-projection-utils";
+import {
+  ensureSharedDeckOverlay,
+  onSharedDeckDevice,
+  setSharedDeckLayers,
+} from "./shared-deck-overlay";
 import {
   isRasterControlStoreLayer,
   resetRasterStoreSyncSuspension,
@@ -20,10 +26,7 @@ import {
   disposeAllRasterClassification,
   disposeRasterClassification,
 } from "./raster-symbology-texture";
-import {
-  disposeAllPaletteLegends,
-  disposePaletteLegend,
-} from "./raster-palette";
+import { disposeAllPaletteLegends, disposePaletteLegend } from "./raster-palette";
 
 const rasterControlPosition: GeoLibreMapControlPosition = "top-left";
 const RASTER_PANEL_CLASS = "geolibre-raster-panel";
@@ -38,21 +41,49 @@ const SAMPLE_RASTER_DATASETS: RasterSampleDataset[] = [
   {
     label: "Land cover",
     url: "https://data.source.coop/giswqs/opengeos/nlcd_2021_land_cover_30m.tif",
+    attribution: "U.S. Geological Survey (USGS)",
   },
   {
     label: "Elevation (DEM)",
     url: "https://data.source.coop/giswqs/opengeos/dem.tif",
+    attribution: "U.S. Geological Survey (USGS)",
+  },
+  {
+    // Global ocean/land bathymetry: a single-band DEM good for the colormap
+    // and hillshade modes. Attribution feeds the map's attribution control
+    // while the layer is visible (upstream RasterSampleDataset.attribution).
+    label: "Bathymetry (GEBCO)",
+    url: "https://data.source.coop/giswqs/gebco-bathymetry/gebco_2026/gebco_2026.tif",
+    attribution: "GEBCO Compilation Group (2026)",
   },
   {
     // A multiband Sentinel-2 L2A scene: good for RGB composites and the
     // normalized-difference index mode (NDVI and friends).
     label: "Sentinel-2 (multiband)",
     url: "https://data.source.coop/opengeos/geoai/S2C-MSIL2A-20250920T162001-subset.tif",
+    attribution: "Copernicus Sentinel data (ESA)",
+  },
+  {
+    // A gdalbuildvrt mosaic of six NAIP COG tiles (4-band RGB+NIR), read
+    // straight from the .vrt: exercises maplibre-gl-raster's VRT support
+    // (v0.11.0+), which renders a plain COG mosaic in the browser without GDAL.
+    label: "NAIP mosaic (VRT)",
+    url: "https://data.source.coop/giswqs/opengeos/naip_water_train.vrt",
+    attribution: "USDA Farm Service Agency (FSA)",
+  },
+  {
+    // A STAC FeatureCollection of 2023 North Dakota NAIP scenes, whose assets
+    // resolve to COGs on Azure blob storage: exercises maplibre-gl-raster's
+    // STAC mosaic support (v0.12.0+), which stitches the scenes at read time
+    // rather than requiring a prebuilt VRT or MosaicJSON.
+    label: "NAIP STAC mosaic (North Dakota)",
+    url: "https://data.source.coop/giswqs/opengeos/naip_nd_2023_stac.json",
+    attribution: "USDA Farm Service Agency (FSA)",
   },
 ];
 
 // This type mirrors undocumented private members of RasterControl from
-// maplibre-gl-raster (re-verified against v0.6.3). All access is optional (?.)
+// maplibre-gl-raster (re-verified against v0.12.0). All access is optional (?.)
 // so a rename in a future release degrades to a no-op rather than a crash --
 // re-verify these names AND the .mlr-control-close selector in
 // wireRasterCloseButton when bumping the dependency.
@@ -72,20 +103,17 @@ type OverlayLike = {
 type MapControlHost = {
   addControl: (control: unknown) => void;
 };
-type MapboxOverlayConstructor = new (
-  props: Record<string, unknown>,
-) => OverlayLike;
+type MapboxOverlayConstructor = new (props: Record<string, unknown>) => OverlayLike;
 type RasterLayerManagerInternals = {
   /** The currently selected raster id (read to restore it after inspect). */
   selectedId?: string | null;
   _deps?: {
-    createOverlay?: (
-      map: MapControlHost,
-      options: OverlayFactoryOptions,
-    ) => OverlayLike;
+    createOverlay?: (map: MapControlHost, options: OverlayFactoryOptions) => OverlayLike;
+    removeOverlay?: (map: MapControlHost, overlay: OverlayLike) => void;
     loadGeoTIFF?: (url: string) => Promise<unknown>;
     geolibreTransparentOverlayPatched?: boolean;
     geolibreTauriNodataPatched?: boolean;
+    geolibreSharedOverlayPatched?: boolean;
   };
 };
 type RasterTileArray = {
@@ -110,6 +138,10 @@ let rasterControl: RasterControl | null = null;
 let rasterControlMounted = false;
 let restorePanelExpandTimeout: number | null = null;
 let rasterControlInterleaved = true;
+// Unsubscribes the web raster overlay proxy from the shared Deck's device
+// notifications when the control's overlay is torn down (see
+// patchWebRasterOverlayFactory).
+let rasterSharedOverlayDeviceUnsubscribe: (() => void) | null = null;
 
 /**
  * Details of a raster that the panel could not render because it is a striped
@@ -137,9 +169,7 @@ export interface NonTiledRasterRequest {
   dismiss: () => void;
 }
 
-type NonTiledRasterHandler = (
-  request: NonTiledRasterRequest,
-) => void | Promise<void>;
+type NonTiledRasterHandler = (request: NonTiledRasterRequest) => void | Promise<void>;
 
 let nonTiledRasterHandler: NonTiledRasterHandler | null = null;
 // Layer ids currently being handled, so a repeated 'error' event for the same
@@ -162,14 +192,12 @@ const NON_TILED_FETCH_TIMEOUT_MS = 60_000;
  *
  * @param handler - The handler, or `null` to unregister.
  */
-export function setNonTiledRasterHandler(
-  handler: NonTiledRasterHandler | null,
-): void {
+export function setNonTiledRasterHandler(handler: NonTiledRasterHandler | null): void {
   nonTiledRasterHandler = handler;
 }
 
 /** Whether a raster load error is the upstream "striped, not tiled" failure.
- * maplibre-gl-raster (v0.6.3) rejects non-tiled GeoTIFFs with a message
+ * maplibre-gl-raster (re-verified against v0.12.0) rejects non-tiled GeoTIFFs with a message
  * containing "not tiled"; this is the only signal it exposes, so the match is
  * coupled to that wording. Re-verify it (and broaden if needed) when bumping the
  * dependency -- a reworded message degrades to the plain error, not a crash. */
@@ -204,10 +232,7 @@ export function openRasterLayerPanel(app: GeoLibreAppAPI): void {
         wireRasterCloseButton(control);
         applyRasterPanelClass(control);
       } catch (error) {
-        console.error(
-          "[GeoLibre] Failed to open the raster layer panel",
-          error,
-        );
+        console.error("[GeoLibre] Failed to open the raster layer panel", error);
       }
     }, 0);
   })().catch((error) => {
@@ -257,10 +282,7 @@ export async function addRasterToMap(
  * @param layerId - The store/raster layer id.
  * @param beforeId - The MapLibre style layer id to draw beneath, or undefined.
  */
-export function applyRasterLayerOrder(
-  layerId: string,
-  beforeId: string | undefined,
-): void {
+export function applyRasterLayerOrder(layerId: string, beforeId: string | undefined): void {
   rasterControl?.setRasterBeforeId(layerId, beforeId ?? null);
 }
 
@@ -299,8 +321,7 @@ let rasterInspectPriorSelection: string | null = null;
  */
 export function setRasterPixelInspect(layerId: string, enabled: boolean): void {
   if (!rasterControl) return;
-  const manager = (rasterControl as unknown as RasterControlInternals)
-    ._layerManager;
+  const manager = (rasterControl as unknown as RasterControlInternals)._layerManager;
   if (enabled) {
     rasterInspectPriorSelection = manager?.selectedId ?? null;
     rasterControl.selectRaster(layerId);
@@ -325,9 +346,7 @@ export function setRasterPixelInspect(layerId: string, enabled: boolean): void {
  * @param app - The GeoLibre app API.
  */
 export function restoreRasterLayers(app: GeoLibreAppAPI): void {
-  const hasRasterLayers = useAppStore
-    .getState()
-    .layers.some(isRasterControlStoreLayer);
+  const hasRasterLayers = useAppStore.getState().layers.some(isRasterControlStoreLayer);
   if (!hasRasterLayers && !rasterControl) return;
 
   void (async () => {
@@ -344,9 +363,7 @@ export function restoreRasterLayers(app: GeoLibreAppAPI): void {
     );
 
     const pending: Promise<unknown>[] = [];
-    const panelCollapsed = rasterPanelCollapsedFromLayers(
-      useAppStore.getState().layers,
-    );
+    const panelCollapsed = rasterPanelCollapsedFromLayers(useAppStore.getState().layers);
     // The suspension covers the synchronous events fired inside this block:
     // removeRaster's rasterremove, and the rasteradd each addRaster emits
     // before it awaits the GeoTIFF header (without it, the first rasteradd
@@ -371,9 +388,7 @@ export function restoreRasterLayers(app: GeoLibreAppAPI): void {
         if (control.getRaster(layer.id)) continue;
 
         const url =
-          typeof layer.source.url === "string" && layer.source.url
-            ? layer.source.url
-            : undefined;
+          typeof layer.source.url === "string" && layer.source.url ? layer.source.url : undefined;
         if (!url) {
           // Console-only on purpose for this first pass: the plugin layer has
           // no toast/notification API today. Surface this through an in-app
@@ -400,10 +415,7 @@ export function restoreRasterLayers(app: GeoLibreAppAPI): void {
               zoomTo: false,
             })
             .catch((error) => {
-              console.error(
-                `[GeoLibre] Failed to restore raster layer "${layer.name}"`,
-                error,
-              );
+              console.error(`[GeoLibre] Failed to restore raster layer "${layer.name}"`, error);
             }),
         );
       }
@@ -433,9 +445,7 @@ export function restoreRasterLayers(app: GeoLibreAppAPI): void {
   });
 }
 
-async function ensureRasterControl(
-  app: GeoLibreAppAPI,
-): Promise<RasterControl | null> {
+async function ensureRasterControl(app: GeoLibreAppAPI): Promise<RasterControl | null> {
   const RasterControlClass = await getRasterControlClass();
 
   rasterControl ??= createRasterControl(RasterControlClass);
@@ -451,6 +461,10 @@ async function ensureRasterControl(
     // The control mounts hidden: project restore must not surface a map
     // button the user never asked for. openRasterLayerPanel shows it.
     await patchTauriRasterOverlayFactory(rasterControl);
+    // On web the control renders interleaved, which shares deck.gl's per-map
+    // Deck with the other interleaved overlays; route it through the shared
+    // overlay so it coexists with them (#1149). No-op on Tauri (overlaid).
+    patchWebRasterOverlayFactory(app, rasterControl);
     // Patch the deck.gl render path so classified single-band rasters sample a
     // custom stepped colormap. Must run after addMapControl: the LayerManager
     // (and its _renderTileFor / _device) is created in the control's onAdd,
@@ -487,9 +501,7 @@ function getMapboxOverlayClass(): Promise<MapboxOverlayConstructor> {
   return mapboxOverlayClassPromise;
 }
 
-function createRasterControl(
-  RasterControlClass: RasterControlConstructor,
-): RasterControl {
+function createRasterControl(RasterControlClass: RasterControlConstructor): RasterControl {
   rasterControlInterleaved = !isTauriRuntime();
   const control = new RasterControlClass({
     className: "geolibre-raster-control",
@@ -574,9 +586,7 @@ function createRasterControl(
                 : undefined,
             );
             if (!response.ok) {
-              throw new Error(
-                `Failed to read raster bytes: ${response.status}`,
-              );
+              throw new Error(`Failed to read raster bytes: ${response.status}`);
             }
             return new Uint8Array(await response.arrayBuffer());
           },
@@ -587,14 +597,12 @@ function createRasterControl(
           },
         }),
       )
-      .catch((error: unknown) =>
-        console.error("[GeoLibre] Non-tiled raster handler failed", error),
-      )
+      .catch((error: unknown) => console.error("[GeoLibre] Non-tiled raster handler failed", error))
       .finally(() => nonTiledInFlight.delete(layerId));
   });
   // syncRasterLayersToStore re-reads getState().collapsed when these fire.
   // Safe: expand()/collapse() delegate to toggle(), which flips
-  // _state.collapsed BEFORE emitting the event (verified against v0.6.3) --
+  // _state.collapsed BEFORE emitting the event (re-verified against v0.12.0) --
   // re-verify that ordering when bumping the dependency.
   const panelStateSyncHandler: RasterControlEventHandler = () =>
     syncRasterLayersToStoreForRuntime(control);
@@ -612,9 +620,7 @@ function syncRasterLayersToStoreForRuntime(control: RasterControl): void {
   });
 }
 
-async function patchTauriRasterOverlayFactory(
-  control: RasterControl,
-): Promise<void> {
+async function patchTauriRasterOverlayFactory(control: RasterControl): Promise<void> {
   if (!isTauriRuntime()) return;
 
   const manager = (control as unknown as RasterControlInternals)._layerManager;
@@ -647,10 +653,65 @@ async function patchTauriRasterOverlayFactory(
 
   if (deps.loadGeoTIFF && !deps.geolibreTauriNodataPatched) {
     const loadGeoTIFF = deps.loadGeoTIFF;
-    deps.loadGeoTIFF = async (url) =>
-      patchGeoTiffNumericNodata(await loadGeoTIFF(url));
+    deps.loadGeoTIFF = async (url) => patchGeoTiffNumericNodata(await loadGeoTIFF(url));
     deps.geolibreTauriNodataPatched = true;
   }
+}
+
+/**
+ * On web the raster control renders interleaved, so its deck.gl overlay reuses
+ * deck.gl's single per-map Deck (`map.__deck`) -- and each interleaved overlay's
+ * setProps overwrites that Deck's whole layer list with only its own layers, so
+ * a raster and a Google/deckgl-viz overlay silently erase each other
+ * (opengeos/GeoLibre#1149). This routes the control's interleaved layers through
+ * the single shared deck overlay (./shared-deck-overlay.ts) instead: createOverlay
+ * returns a lightweight proxy whose only job is to forward the control's setProps
+ * into the shared overlay under the "raster" source, and the shared Deck's luma
+ * device is fed to the control's onDeviceInitialized so its classification
+ * colormap textures still allocate against the right GPU context.
+ *
+ * No-op on Tauri, which renders overlaid (a separate deck canvas that owns its
+ * own Deck) and so never touches the shared interleaved Deck.
+ *
+ * @param app - The host application API (drives the shared overlay).
+ * @param control - The mounted maplibre-gl-raster control.
+ */
+function patchWebRasterOverlayFactory(app: GeoLibreAppAPI, control: RasterControl): void {
+  if (isTauriRuntime()) return;
+
+  const manager = (control as unknown as RasterControlInternals)._layerManager;
+  const deps = manager?._deps;
+  if (!deps || deps.geolibreSharedOverlayPatched) return;
+
+  deps.createOverlay = (_map, options) => {
+    void ensureSharedDeckOverlay(app);
+    // Feed the shared Deck's device to the control so its GPU colormap textures
+    // allocate against the same context its COGLayers render in.
+    rasterSharedOverlayDeviceUnsubscribe?.();
+    rasterSharedOverlayDeviceUnsubscribe = onSharedDeckDevice((device) => {
+      options.onDeviceInitialized(device);
+    });
+    return {
+      setProps: (props: { layers?: unknown[] }) => {
+        setSharedDeckLayers("raster", (props.layers ?? []) as Layer[]);
+      },
+    };
+  };
+
+  // maplibre-gl-raster (re-verified against v0.12.0) calls `_deps.removeOverlay(this._map, this._overlay)`
+  // from its LayerManager teardown (after the last raster is removed / the
+  // control is destroyed); re-verify this hook exists when bumping the
+  // dependency. Even if a future version stopped calling it, the control still
+  // pushes an empty layer list through the proxy's setProps first, so the
+  // "raster" source is cleared regardless -- this only also drops the device
+  // subscription.
+  deps.removeOverlay = () => {
+    rasterSharedOverlayDeviceUnsubscribe?.();
+    rasterSharedOverlayDeviceUnsubscribe = null;
+    setSharedDeckLayers("raster", []);
+  };
+
+  deps.geolibreSharedOverlayPatched = true;
 }
 
 function patchGeoTiffNumericNodata(tiff: unknown): unknown {
@@ -750,10 +811,7 @@ function hideRasterControl(control: RasterControl): void {
   if (container) container.style.display = "none";
 }
 
-function applyRestoredRasterPanelState(
-  control: RasterControl,
-  panelCollapsed: boolean,
-): void {
+function applyRestoredRasterPanelState(control: RasterControl, panelCollapsed: boolean): void {
   // A restore queued by an earlier project load must not fire after this
   // one has applied a different panel state to the same control.
   if (restorePanelExpandTimeout !== null) {
@@ -790,8 +848,7 @@ function rasterPanelCollapsedFromLayers(
 ): boolean {
   const panelCollapsed = layers.find(
     (layer) =>
-      isRasterControlStoreLayer(layer) &&
-      typeof layer.metadata.panelCollapsed === "boolean",
+      isRasterControlStoreLayer(layer) && typeof layer.metadata.panelCollapsed === "boolean",
   )?.metadata.panelCollapsed;
   // Older projects did not persist this UI state. Keep them collapsed so
   // loading a raster project does not unexpectedly open the Add Data panel.

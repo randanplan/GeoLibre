@@ -2,7 +2,7 @@
 
 ## Overview
 
-GeoLibre is a free and open-source, lightweight, cloud-native GIS platform that runs in the web browser, on the desktop, on mobile, and inside Jupyter notebooks, all from a single npm workspaces monorepo. The UI is a React app that ships as a native desktop app hosted by Tauri v2 and as a browser-based web app, adapting responsively to mobile and small screens. Map rendering uses MapLibre GL JS in the browser webview, with deck.gl used for advanced raster, point cloud, and 3D overlays. Application state lives in a Zustand store (`@geolibre/core`).
+GeoLibre is a free and open-source, lightweight, cloud-native GIS platform that runs in the web browser, on the desktop, on mobile, and inside Jupyter notebooks, all from a single npm workspaces monorepo. The UI is a React app that ships as a native desktop app hosted by Tauri v2 and as a browser-based web app, adapting responsively to mobile and small screens. Map rendering uses MapLibre GL JS in the browser webview, with deck.gl used for advanced raster, point cloud, and 3D overlays, and an optional [CesiumJS](https://cesium.com/platform/cesiumjs/) 3D-globe view (see [3D globe view (CesiumJS)](#3d-globe-view-cesiumjs)) offered as a split pane. Application state lives in a Zustand store (`@geolibre/core`).
 
 ```mermaid
 flowchart LR
@@ -37,6 +37,16 @@ flowchart LR
 5. Style panel and layer panel updates change layer state, then map sync updates paint, visibility, opacity, ordering, and removal.
 6. Attribute table selections update the highlighted feature source and can zoom the map to the selected feature.
 7. Desktop save uses `projectFromStore` and writes `.geolibre.json` to disk.
+
+## 3D globe view (CesiumJS)
+
+The 2D MapLibre map can be joined by a 3D globe rendered with [CesiumJS](https://cesium.com/platform/cesiumjs/), offered as a **split pane** rather than a whole-app engine swap. Because the store (`@geolibre/core`) is engine-agnostic — it holds plain `GeoLibreLayer` records and a `MapViewState`, not MapLibre objects — a second renderer plugs in by subscribing to the same store, exactly as the 2D `SecondaryMapCanvas` panes do. There is no engine abstraction layer: MapLibre stays the default and the primary map, and Cesium is a first-party view mode (not a plugin — the plugin API is MapLibre-typed).
+
+- **Enabling it.** Each secondary pane in the map grid carries a 2D/3D toggle. The globe is only offered when a Cesium Ion token is configured — Cesium World Imagery and Terrain require one — so without a token the toggle is hidden and a project saved with a globe pane opens as the 2D map. The token is resolved through `getCesiumIonToken()` (`@geolibre/core`), which reads `VITE_CESIUM_TOKEN`/`CESIUM_TOKEN` from the build **or** from a runtime override, so it can be set at build time (`CESIUM_TOKEN`; see the [Environment variables](https://github.com/opengeos/GeoLibre/blob/main/README.md#environment-variables) section) or at runtime with no rebuild. Settings → Environment Variables has a dedicated masked **Cesium Ion token** field backed by device-local `DesktopSettings` (localStorage, never the shared project file); `useRuntimeEnvironmentVariables` projects it into `VITE_CESIUM_TOKEN` on the `window.__GEOLIBRE_RUNTIME_ENV__` global (empty values are not projected, so they cannot blank a build-time token). `MapGrid` re-resolves the token on the `geolibre:runtime-env-change` event, so the toggle appears as soon as one is entered.
+- **Lazy loading.** The whole Cesium engine (~4.8 MB) is `import()`-ed only when a pane switches to the globe, kept in its own build chunk (`manualChunks`) and off the 2D boot path. A Vite plugin (`vite-plugins/copy-cesium-assets.ts`) stages Cesium's runtime Workers/Assets/Widgets into `public/cesium/` and the canvas sets `window.CESIUM_BASE_URL` so the engine finds them.
+- **Camera sync.** `packages/map/src/cesium-camera.ts` converts between MapLibre's Web-Mercator `MapViewState` (zoom, nadir-referenced pitch, bearing) and Cesium's camera (metric range, horizon-referenced pitch, heading), matched by **ground resolution** (metres per pixel) so the on-screen scale stays in step even when the panes differ in height. `CesiumCanvas` seeds its camera from the shared `mapView`, applies store changes to the globe, and writes the globe's own moves back — bidirectional, like the 2D panes — with a tolerance check that suppresses the apply→`moveEnd` echo so there is no jitter loop.
+- **Layer sync.** `CesiumLayerSync` (`packages/map/src/cesium-layer-sync.ts`) reconciles the store's `GeoLibreLayer[]` onto the globe the way `MapController.syncLayers` does for MapLibre, reusing the same per-pane visibility overrides and group effects as `SecondaryMapCanvas`. It renders the kinds where Cesium is the natural fit — GeoJSON (a draped `GeoJsonDataSource` styled from the layer's fill/stroke/opacity), XYZ/raster/WMTS and WMS (as `ImageryLayer`s), and 3D Tiles (a `Cesium3DTileset` primitive that consumes the layer's tileset URL, request headers, and altitude offset directly) — with live visibility/opacity, rebuild-on-source-change, and removal. Other layer kinds (PMTiles, MBTiles, Zarr, LiDAR, splats, deck.gl viz, …) are skipped on the globe and still render in the 2D panes; the exported `isCesiumSupportedLayerType` predicate lets the pane's layer menu tag those "2D only". COG/imagery-from-raster is a candidate for a later pass.
+- **Persistence.** A pane's `viewKind` is part of `SecondaryMapView` and round-trips through the `.geolibre.json` project format (`normalizeSecondaryMapViews`), so a project saved with a globe pane reopens as the globe — provided a token is available, otherwise it falls back to the 2D map.
 
 ## DuckDB-WASM
 
@@ -93,6 +103,40 @@ The container does not run the Tauri desktop shell or the optional Python sideca
 
 - Tauri CSP allowlists tile and style hosts (OpenFreeMap, CARTO).
 - File access uses dialog-selected paths only.
+
+### Native HTTP trust store and mutual TLS
+
+The desktop app issues some remote fetches (tile/URL resolution, OGC
+GetCapabilities, and similar) from the native Rust process rather than the
+WebView. That path (`guarded_http_client` in `src-tauri/src/lib.rs`) trusts the
+**OS/system certificate store** in addition to the bundled Mozilla roots, so a
+server signed by an enterprise CA installed on the machine is accepted without
+extra configuration.
+
+For endpoints behind **mutual TLS (mTLS)**, the WebView `fetch` path shows an
+interactive OS certificate prompt; the native Rust client cannot, so point it at
+a client certificate with environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `GEOLIBRE_HTTP_CA_CERT` | Path to a PEM bundle of extra CA certificate(s) to trust, on top of the OS store (for a private CA not installed system-wide). |
+| `GEOLIBRE_HTTP_CLIENT_CERT` | Path to the client certificate to present. A `.pem` file (certificate chain plus an **unencrypted** PKCS#8 private key) or a PKCS#12 bundle (`.p12`/`.pfx`). |
+| `GEOLIBRE_HTTP_CLIENT_CERT_PASSWORD` | Passphrase for a PKCS#12 client certificate. Its presence also forces the PKCS#12 code path. |
+
+A `.p12`/`.pfx` extension (or a supplied passphrase) selects PKCS#12; any other
+path is read as PEM. PEM identities use the default rustls backend; PKCS#12
+identities use the platform native-tls backend (SChannel on Windows, Secure
+Transport on macOS, OpenSSL on Linux), which also reads the OS trust store.
+Convert a PKCS#12 export to PEM with
+`openssl pkcs12 -in cert.p12 -out cert.pem -nodes` if you prefer the rustls path.
+A set-but-empty value for any of these variables is treated as unset.
+
+The configured client certificate is held on the shared native HTTP client and
+is therefore **presented to any HTTPS server that requests one** during a native
+fetch (tile, style, and OGC hosts a project points at), not only the endpoint the
+certificate was issued for. TLS sends a client certificate only when the server
+asks for one, so this is not an unconditional disclosure, but configure a client
+certificate only when the hosts the app talks to are trusted.
 
 ## Performance: map rendering on Linux (WebKitGTK)
 

@@ -42,15 +42,10 @@ export const DialogContent = React.forwardRef<
       )}
       {...props}
     >
-      <div
-        className={cn(
-          "grid min-h-0 flex-1 gap-4 overflow-auto",
-          bodyClassName ?? "p-4 sm:p-6",
-        )}
-      >
+      <div className={cn("grid min-h-0 flex-1 gap-4 overflow-auto", bodyClassName ?? "p-4 sm:p-6")}>
         {children}
       </div>
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring">
+      <DialogPrimitive.Close className="absolute end-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
@@ -60,15 +55,9 @@ export const DialogContent = React.forwardRef<
 ));
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
-export const DialogHeader = ({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) => (
+export const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn(
-      "flex flex-col space-y-1.5 text-center sm:text-left",
-      className,
-    )}
+    className={cn("flex flex-col space-y-1.5 text-center sm:text-start", className)}
     {...props}
   />
 );
