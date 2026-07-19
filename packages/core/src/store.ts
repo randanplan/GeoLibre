@@ -57,6 +57,11 @@ import {
   type StyleLibraryEntry,
 } from "./types";
 import { hasSimpleStyleProperties } from "./vector-color";
+import {
+  applyCopiedLayerStyle,
+  type CopiedLayerStyle,
+  extractCopiedLayerStyle,
+} from "./layer-style-clipboard";
 import { applyJoinsToLayer, cascadeLayerJoinRefresh, reapplyLayerJoins } from "./joins";
 import {
   DEFAULT_ELLIPSOID_ID,
@@ -469,6 +474,33 @@ export interface AppState {
   setLayerOpacity: (id: string, opacity: number) => void;
   setLayerStyle: (id: string, style: Partial<LayerStyle>) => void;
   /**
+   * Transient clipboard holding a layer's symbology, captured by
+   * {@link copyLayerStyle} and applied by {@link pasteLayerStyle} (copy/paste
+   * styles, issue #1339). Runtime-only: excluded from undo history
+   * (`partialize` never lists it) and from the saved project. `null` until a
+   * style is copied this session. Cleared by `newProject`/`loadProject` so a
+   * paste can't apply an entry from a different project; it deliberately
+   * survives undo/redo within a project (it holds a deep snapshot, not a live
+   * layer reference, so a paste stays valid even if the source layer is undone
+   * away — only the displayed source name may then be stale).
+   */
+  copiedLayerStyle: CopiedLayerStyle | null;
+  /**
+   * Snapshot the given layer's style into {@link copiedLayerStyle} so it can be
+   * pasted onto a compatible layer. No-op when the layer is missing or has no
+   * copyable symbology (leaving any prior clipboard entry untouched). Returns
+   * `true` when a style was captured, so callers can skip the confirmation on a
+   * no-op.
+   */
+  copyLayerStyle: (id: string) => boolean;
+  /**
+   * Apply the {@link copiedLayerStyle} clipboard entry onto the given layer.
+   * No-op when the clipboard is empty, the layer is missing, or the entry's
+   * style family does not match the target layer's. Returns `true` when the
+   * style was applied, so callers can skip the confirmation on a no-op.
+   */
+  pasteLayerStyle: (id: string) => boolean;
+  /**
    * Replace a layer's persistent attribute joins and immediately re-derive its
    * joined columns (strip what the previous joins added, apply the new list).
    * Pass an empty array to detach every join and restore the base attributes.
@@ -732,6 +764,7 @@ export const useAppStore = create<AppState>()(
       mapLayout: { ...DEFAULT_MAP_GRID_LAYOUT },
       secondaryMapViews: [],
       primaryMapLabel: "",
+      copiedLayerStyle: null,
       selectedLayerId: null,
       selectedFeatureId: null,
       selectedFeatureIds: [],
@@ -1369,6 +1402,32 @@ export const useAppStore = create<AppState>()(
           isDirty: true,
         })),
 
+      copyLayerStyle: (id) => {
+        const layer = get().layers.find((l) => l.id === id);
+        if (!layer) return false;
+        const copied = extractCopiedLayerStyle(layer);
+        // Leave any prior clipboard entry in place when this layer is not
+        // copyable, so opening a non-stylable layer's menu never clears it.
+        if (!copied) return false;
+        set({ copiedLayerStyle: copied });
+        return true;
+      },
+
+      pasteLayerStyle: (id) => {
+        const s = get();
+        const copied = s.copiedLayerStyle;
+        if (!copied) return false;
+        const layer = s.layers.find((l) => l.id === id);
+        if (!layer) return false;
+        const patch = applyCopiedLayerStyle(layer, copied);
+        if (!patch) return false;
+        set({
+          layers: s.layers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+          isDirty: true,
+        });
+        return true;
+      },
+
       reorderLayer: (id, direction) =>
         set((s) => {
           const idx = s.layers.findIndex((l) => l.id === id);
@@ -1636,6 +1695,9 @@ export const useAppStore = create<AppState>()(
           selectedFeatureId: null,
           selectedFeatureIds: [],
           identifyLayerId: null,
+          // The copied style names a layer from the previous project, so a
+          // paste in the new one would apply an orphaned entry.
+          copiedLayerStyle: null,
           pointerCoords: null,
           attributeFilter: "",
           // Don't carry an active story presentation into a different project.
@@ -1676,6 +1738,9 @@ export const useAppStore = create<AppState>()(
           selectedFeatureId: null,
           selectedFeatureIds: [],
           identifyLayerId: null,
+          // The copied style names a layer from the previous project, so a
+          // paste in the loaded one would apply an orphaned entry.
+          copiedLayerStyle: null,
           // Present a bundled story on load; otherwise drop any presentation
           // carried over from the previous project.
           ui: {
