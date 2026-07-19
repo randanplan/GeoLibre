@@ -1,5 +1,6 @@
 import * as duckdb from "@duckdb/duckdb-wasm";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
+import { isGeographicCrs } from "./crs-utils";
 import {
   detectGeometryColumn,
   geometryExpr,
@@ -818,7 +819,9 @@ function sourceCrsFromGeoJson(fc: FeatureCollection): string | null {
   if (typeof name !== "string") return null;
   const upper = name.toUpperCase();
   // CRS84 and EPSG:4326 are both WGS84 lon/lat; no reprojection is required.
-  if (upper.includes("CRS84") || /EPSG:+4326\b/.test(upper)) return null;
+  // Shares the WGS84 test with the delimited-text importer so the rule lives in
+  // one place.
+  if (isGeographicCrs(name)) return null;
   const match = upper.match(/EPSG:+(\d+)/);
   return match ? `EPSG:${match[1]}` : null;
 }
